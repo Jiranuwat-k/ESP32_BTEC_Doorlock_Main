@@ -1,0 +1,29 @@
+{
+  "name": "ESPWiFiManager",
+  "version": "1.1.0",
+  "description": "Library Manages WiFi connections for ESP8266/ESP32 with web interface and filesystem support SPIFFS/LittleFS/SD.",
+  "keywords": "wifi, filesystem, manager",
+  "authors": {
+    "name": "Jiranuwat.k",
+    "email": "jiranuwat.k@outlook.com"
+  },
+  "frameworks": "arduino",
+  "platforms": ["espressif32", "espressif8266"],
+  "dependencies": [
+    {
+      "name": "esp32async/ESPAsyncWebServer",
+      "version": "^3.9.4"
+    },
+    {
+      "name": "esp32async/AsyncTCP",
+      "version": "^3.4.10"
+    },
+    {
+      "name": "esp32async/ESPAsyncTCP",
+      "version": "^2.0.0"
+    }
+  ],
+  "build": {
+    "includeDir": "src"
+  }
+}

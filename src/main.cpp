@@ -1,25 +1,31 @@
+#include <Arduino.h>
+#include "Config.h"
 #include <SPI.h>
 #include <MFRC522.h>
+#include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <ESPAsyncUpdateServer.h>
+#include <ESPWiFiManager.h>
 #include <LittleFS.h>
 #include "FS.h"
 #include <time.h>
-#include <WiFi.h>
-
-
-
-#define RST_PIN         21          // Configurable, see typical pin layout above
-#define SS_PIN          5         // Configurable, see typical pin layout above
+#include <ESPmDNS.h>
+#include <Ticker.h>
+#include "Filehelper.h"
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
-const char* ssid = "WeeM";
-const char* password = "123456789";
-long timezone = 0;
-byte daysavetime = 1;
-
-// Create AsyncWebServer object on port 80
+MFRC522 mfrc522_2(SS2_PIN, RST_PIN);  // Create MFRC522 instance for second reader
 AsyncWebServer server(80);
+Ticker Tick;
+DNSServer dns;
+ESPAsyncUpdateServer updateServer(&server, LittleFS);
+ESPWiFiManager wifimanager(&server,&dns,LittleFS);
+
+const char* http_username = "admin";
+const char* http_password = "admin";
+long timezone = 7;
+byte daysavetime = 0;
 
 const char* PARAM_INPUT_1 = "uid";
 const char* PARAM_INPUT_2 = "role";
@@ -29,156 +35,27 @@ const char* PARAM_INPUT_4 = "delete-user";
 String inputMessage;
 String inputParam;
 
-const int ledPin = 13;
-const int buzzerPin = 4;
+unsigned long currentMillis = 0;
+bool doorActive = false;
+unsigned long doorTimer = 0;
+const long doorOpenDuration = 8000; // เปิดนาน 8 วินาที
 
-// Write to the SD card
-void writeFile(fs::FS &fs, const char * path, const char * message) {
-  Serial.printf("Writing file: %s\n", path);
+bool successEffectActive = false;
+unsigned long successEffectTimer = 0;
+const long successEffectDuration = 500;
 
-  File file = fs.open(path, FILE_WRITE);
-  if(!file) {
-    Serial.println("Failed to open file for writing");
-    return;
-  }
-  if(file.print(message)) {
-    Serial.println("File written");
-  } else {
-    Serial.println("Write failed");
-  }
-  file.close();
-}
+int deniedBeepState = 0; // 0=นิ่ง, 1-6=ขั้นตอนการดัง
+unsigned long deniedBeepTimer = 0;
+const long deniedBeepInterval = 100;
 
-// Append data to the SD card
-void appendFile(fs::FS &fs, const char * path, const char * message) {
-  Serial.printf("Appending to file: %s\n", path);
-
-  File file = fs.open(path, FILE_APPEND);
-  if(!file) {
-    Serial.println("Failed to open file for appending");
-    return;
-  }
-
-  time_t t = file.getLastWrite();
-  struct tm *tmstruct = localtime(&t);
-
-  char bufferDate[50]; // Adjust buffer size as needed
-  snprintf(bufferDate, sizeof(bufferDate), "%d-%02d-%02d", 
-          (tmstruct->tm_year) + 1900, 
-          (tmstruct->tm_mon) + 1, 
-          tmstruct->tm_mday);
-  char bufferTime[50]; // Adjust buffer size as needed
-  snprintf(bufferTime, sizeof(bufferTime), "%02d:%02d:%02d", 
-          tmstruct->tm_hour, 
-          tmstruct->tm_min, 
-          tmstruct->tm_sec);
-          
-  String lastWriteTime = bufferDate;
-  String finalString = String(bufferDate) + "," + String(bufferTime) + "," + String(message) + "\n";
-  Serial.println(lastWriteTime);
-  if(file.print(finalString.c_str())) {
-    Serial.println("Message appended");
-  } else {
-    Serial.println("Append failed");
-  }
-  file.close();
-}
-
-// Append data to the SD card
-void appendUserFile(fs::FS &fs, const char * path, const char * message) {
-  Serial.printf("Appending to file: %s\n", path);
-
-  File file = fs.open(path, FILE_APPEND);
-  if(!file) {
-    Serial.println("Failed to open file for appending");
-    return;
-  }
-
-  String finalString = String(message) + "\n";
-
-  if(file.print(finalString.c_str())) {
-    Serial.println("Message appended");
-  } else {
-    Serial.println("Append failed");
-  }
-  file.close();
-}
-
-void deleteFile(fs::FS &fs, const char *path) {
-  Serial.printf("Deleting file: %s\n", path);
-  if (fs.remove(path)) {
-    Serial.println("File deleted");
-  } else {
-    Serial.println("Delete failed");
-  }
+void notFound(AsyncWebServerRequest *request) {
+    request->send(404, "text/plain", "Not found");
 }
 
 String processor(const String& var){
   return String("HTTP GET request sent to your ESP on input field (" 
                 + inputParam + ") with value: " + inputMessage +
                 "<br><a href=\"/\"><button class=\"button button-home\">Return to Home Page</button></a>");
-}
-
-void deleteLineFromFile(fs::FS &fs, const char* filename, int lineNumber) {
-  File file = fs.open(filename);
-  if (!file) {
-    Serial.println("Failed to open file for reading.");
-    return;
-  }
-
-  // Read all lines except the one to delete
-  String lines = "";
-  int currentLine = 0;
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    if (currentLine != lineNumber) {
-      lines += line + "\n";
-    }
-    currentLine++;
-  }
-  file.close();
-
-  // Write back all lines except the deleted one
-  file = fs.open(filename, FILE_WRITE);
-  if (!file) {
-    Serial.println("Failed to open file for writing.");
-    return;
-  }
-
-  file.print(lines);
-  file.close();
-  Serial.println("Line deleted successfully.");
-}
-
-String getRoleFromFile(fs::FS &fs, const char* filename, String uid) {
-  File file = fs.open(filename);
-  if (!file) {
-    Serial.println("Failed to open file for reading.");
-    return "";
-  }
-
-  // Skip the header line
-  file.readStringUntil('\n');
-  
-  // Read each line and check for UID
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    
-    int commaIndex = line.indexOf(',');
-    if (commaIndex > 0) {
-      String fileUID = line.substring(0, commaIndex);
-      String role = line.substring(commaIndex + 1);
-
-      // Compare UID
-      if (fileUID == uid) {
-        file.close();
-        role.trim();  // Remove any extra spaces or newline characters
-        return role;
-      }
-    }
-  }
-  file.close();
-  return "";  // Return empty string if UID not found
 }
 
 void initRFIDReader() {
@@ -218,14 +95,37 @@ void initLittleFS() {
 }
 void initWifi() {
   // Connect to Wi-Fi
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Connecting to WiFi...");
-  }
-  // Print ESP32 Local IP Address
-  Serial.print("ESP IP Address: ");
-  Serial.println(WiFi.localIP());
+  wifimanager.on(WM_CONFIG,[](){
+
+  });
+
+  wifimanager.on(WM_ASYNC_CONFIG,[](){
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    Tick.attach_ms(200,[](){
+      digitalWrite(LED_BUILTIN,!digitalRead(LED_BUILTIN));
+    });
+  });
+  wifimanager.on(WM_SUCCESS,[](){
+    if (MDNS.begin("rfid-doorlock")) {
+      Serial.println("MDNS started");
+    }
+    WiFi.hostname("rfid-doorlock");
+    Serial.println("Success!");
+    Tick.detach();
+    digitalWrite(LED_BUILTIN,HIGH);
+  });
+  updateServer.begin("/update", "Admin", "Admin");
+  wifimanager.begin("Manager");
+  
+  updateServer.on(UPDATE_BEGIN, [](const OTA_UpdateType type, int &result){
+      Serial.print("Update Begin: ");
+      Serial.println(type == OTA_UpdateType::OTA_FIRMWARE ? "Firmware" : "Filesystem");
+  });
+  updateServer.on(UPDATE_END, [](const OTA_UpdateType type, int &result){
+      Serial.print("Update End. Result: ");
+      Serial.println(result == OTA_UpdateResult::OTA_UPDATE_OK ? "OK" : "Error");
+  });
+  updateServer.begin("/update" "Admin", "Admin");
 }
 
 void initTime() {
@@ -292,6 +192,39 @@ void initTime() {
 //   file.close();
 // }
 
+void handlePeripherals() {
+  currentMillis = millis();
+
+  // ตรวจสอบเวลาประตู (ถ้าเปิดอยู่ และเวลาครบกำหนด ให้ปิด)
+  if (doorActive && (currentMillis - doorTimer >= doorOpenDuration)) {
+    digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
+    doorActive = false;
+    Serial.println("Door Locked (Time out)");
+  }
+
+  // ตรวจสอบ Effect ผ่าน (เสียง beep ยาว + LED)
+  if (successEffectActive && (currentMillis - successEffectTimer >= successEffectDuration)) {
+    digitalWrite(BUZZER_PIN, BUZZER_OFF);
+    digitalWrite(LED_STA_PIN, LED_STA_OFF);
+    successEffectActive = false;
+  }
+
+  // ตรวจสอบ Effect ไม่ผ่าน (เสียง beep สั้นๆ 3 ครั้ง)
+  if (deniedBeepState > 0 && (currentMillis - deniedBeepTimer >= deniedBeepInterval)) {
+    deniedBeepTimer = currentMillis; // รีเซ็ตเวลา
+    switch (deniedBeepState) {
+      case 1: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
+      case 2: digitalWrite(BUZZER_PIN, BUZZER_OFF);  digitalWrite(LED_STA_PIN, LED_STA_OFF);  break;
+      case 3: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
+      case 4: digitalWrite(BUZZER_PIN, BUZZER_OFF);  digitalWrite(LED_STA_PIN, LED_STA_OFF);  break;
+      case 5: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
+      case 6: digitalWrite(BUZZER_PIN, BUZZER_OFF);  digitalWrite(LED_STA_PIN, LED_STA_OFF);  break;
+    }
+    deniedBeepState++;
+    if (deniedBeepState > 7) deniedBeepState = 0; // จบการทำงาน
+  }
+}
+
 void setup() {
   Serial.begin(115200);  // Initialize serial communication
   while (!Serial);       // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4).
@@ -302,39 +235,54 @@ void setup() {
   configTime(3600 * timezone, daysavetime * 3600, "time.nist.gov", "0.pool.ntp.org", "1.pool.ntp.org");
   initTime();
   // initSDCard();
-
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW);
-  pinMode(buzzerPin, OUTPUT);
-  digitalWrite(buzzerPin, LOW);
-
+  if (!MDNS.begin("rfid-doorlock")) {
+    Serial.println("Error setting up MDNS responder!");
+  } else {
+    Serial.println("mDNS responder started : rfid-doorlock.local");
+    MDNS.addService("http", "tcp", 80);
+  }
+  pinMode(LED_STA_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(DOORLOCK_PIN, OUTPUT);
+  digitalWrite(LED_STA_PIN, LED_STA_OFF);
+  digitalWrite(BUZZER_PIN, BUZZER_OFF);
+  digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
   // Route for root / web page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(!request->authenticate(http_username, http_password)) 
+      return request->requestAuthentication();
     request->send(LittleFS, "/full-log.html");
   });
   // Route for root /add-user web page
   server.on("/add-user", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(!request->authenticate(http_username, http_password)) 
+      return request->requestAuthentication();
     request->send(LittleFS, "/add-user.html");
   });
   // Route for root /manage-users web page
   server.on("/manage-users", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(!request->authenticate(http_username, http_password)) 
+      return request->requestAuthentication();
     request->send(LittleFS, "/manage-users.html");
   });
 
-  // Serve Static files
-  server.serveStatic("/", LittleFS, "/");
-
   // Loads the log.txt file
   server.on("/view-log", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(!request->authenticate(http_username, http_password)) 
+      return request->requestAuthentication();
     request->send(LittleFS, "/log.txt", "text/plain", false);
   });
   // Loads the users.txt file
   server.on("/view-users", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(!request->authenticate(http_username, http_password)) 
+      return request->requestAuthentication();
     request->send(LittleFS, "/users.txt", "text/plain", false);
   });
   
   // Receive HTTP GET requests on <ESP_IP>/get?input=<inputMessage>
   server.on("/get", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    if(!request->authenticate(http_username, http_password)) 
+      return request->requestAuthentication();
     // GET input1 and input2 value on <ESP_IP>/get?input1=<inputMessage1>&input2=<inputMessage2>
     if (request->hasParam(PARAM_INPUT_1) && request->hasParam(PARAM_INPUT_2)) {
       inputMessage = request->getParam(PARAM_INPUT_1)->value();
@@ -367,11 +315,15 @@ void setup() {
     request->send(LittleFS, "/get.html", "text/html", false, processor);
   });
 
+   // Serve Static files
+  server.serveStatic("/style.css", LittleFS, "/style.css");
+  // server.serveStatic("/style.css", LittleFS, "/style.css").setCacheControl("max-age=600");
   // Start server
   server.begin();
 }
 
 void loop() {
+  handlePeripherals();
 	// Reset the loop if no new card present on the sensor/reader. This saves the entire process when idle.
 	if (!mfrc522.PICC_IsNewCardPresent()) {
 		return;
@@ -395,23 +347,34 @@ void loop() {
 
   String role = getRoleFromFile(LittleFS, "/users.txt", uidString);
   if (role != "") {
+    Serial.println("Access Granted");
     Serial.print("Role for UID: ");
     Serial.print(uidString);
     Serial.print(" is ");
     Serial.println(role);
+    digitalWrite(BUZZER_PIN, BUZZER_ON);
+    digitalWrite(LED_STA_PIN, LED_STA_ON);
+    digitalWrite(DOORLOCK_PIN, DOORLOCK_ON);
+    doorActive = true;
+    doorTimer = millis();
+    successEffectActive = true;
+    successEffectTimer = millis();
   } else {
     role = "unknown";
+    Serial.println("Access Denied");
     Serial.print("UID: ");
     Serial.print(uidString);
     Serial.println(" not found, set user role to unknown");
+    deniedBeepState = 1;
+    deniedBeepTimer = millis();
+
   }
   String sdMessage = uidString + "," + role;
   appendFile(LittleFS, "/log.txt", sdMessage.c_str());
-
-  digitalWrite(buzzerPin, HIGH);
-  digitalWrite(ledPin, HIGH);
+  digitalWrite(LED_STA_PIN, LED_STA_ON);
   delay(500);
-  digitalWrite(buzzerPin, LOW);
-  delay(2500);
-  digitalWrite(ledPin, LOW);
+  digitalWrite(LED_STA_PIN, LED_STA_OFF);
+  mfrc522.PICC_HaltA();
+
+  mfrc522.PCD_StopCrypto1();
 }

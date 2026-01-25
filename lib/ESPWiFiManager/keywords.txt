@@ -1,0 +1,29 @@
+#######################################
+# Syntax Coloring Map For ExampleLibrary
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+ESPWiFiManager	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+reset	KEYWORD2
+writeFile	KEYWORD2
+readFile	KEYWORD2
+restartAPI	KEYWORD2
+wificonfigAPI	KEYWORD2
+scanAPI	KEYWORD2
+setLogOutput	KEYWORD2
+setPath	KEYWORD2
+#######################################
+# Constants (LITERAL1)
+#######################################
+SUCCESS	LITERAL1
+CONFIG	LITERAL1
+ASYNC_CONFIG	LITERAL1

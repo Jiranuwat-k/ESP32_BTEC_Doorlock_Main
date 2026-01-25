@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="ESP WiFi Manager" />
+    <title>ESP WiFi Manager</title>
+    <style>
+      :root {
+        --primary-color: #4caf50;
+        --text-color: #333;
+        --bg-color: #f4f4f4;
+        --card-bg: #fff;
+        --danger-color: #f44336;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      body {
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+        padding: 20px;
+        position: relative;
+        /* Removed padding-bottom 50px as we use flow now */
+      }
+      .container {
+        width: 100%;
+        max-width: 450px;
+        background: var(--card-bg);
+        padding: 25px;
+        border-radius: 16px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        display: flex;
+        flex-direction: column;
+        margin: auto;
+        position: relative;
+        z-index: 10;
+      }
+      .title {
+        text-align: center;
+        font-size: 24px;
+        font-weight: 600;
+        color: var(--primary-color);
+        margin-bottom: 20px;
+      }
+
+      .inputcontrol {
+        width: 100%;
+        display: block;
+        margin: 10px 0;
+        padding: 12px 15px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        transition: 0.3s;
+        font-size: 16px;
+        background: #fafafa;
+      }
+      .inputcontrol:focus {
+        border-color: var(--primary-color);
+        background: #fff;
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+      }
+      .inputcontrol.is-invalid {
+        border-color: var(--danger-color);
+        box-shadow: 0 0 0 2px rgba(244, 67, 54, 0.2);
+      }
+
+      .btn {
+        background-color: var(--primary-color);
+        border: none;
+        color: #fff;
+        padding: 14px;
+        text-align: center;
+        display: block;
+        font-size: 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        width: 100%;
+        transition: 0.3s;
+        font-weight: 600;
+        margin-top: 10px;
+      }
+      .btn:hover {
+        background-color: #43a047;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+      }
+      .btn:active {
+        transform: translateY(0);
+      }
+      .btn.disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      #wifilist {
+        margin-top: 10px;
+        overflow-y: auto;
+        max-height: 200px;
+        padding-right: 5px;
+      }
+      #wifilist li {
+        list-style: none;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 0;
+        border-bottom: 1px solid #eee;
+      }
+      #wifilist li:last-child {
+        border-bottom: none;
+      }
+      a.wifiitem {
+        text-decoration: none;
+        font-size: 16px;
+        color: var(--text-color);
+        cursor: pointer;
+        flex-grow: 1;
+        font-weight: 500;
+      }
+
+      .icongroup {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #666;
+      }
+      .svg-icon {
+        width: 20px;
+        height: 20px;
+        fill: currentColor;
+      }
+
+      #refresh {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        text-decoration: none;
+        color: #666;
+        cursor: pointer;
+        margin-bottom: 15px;
+        font-size: 14px;
+        transition: color 0.3s;
+      }
+      #refresh:hover {
+        color: var(--primary-color);
+      }
+
+      .config,
+      .moredetail,
+      .success,
+      .error,
+      .loading {
+        display: none;
+        width: 100%;
+        animation: fadeIn 0.3s;
+      }
+      /* Unified Active State for Proper Centering */
+      .config.active,
+      .moredetail.active,
+      .success.active,
+      .error.active,
+      .loading.active {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        flex-grow: 1;
+      }
+
+      .searching {
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        padding: 40px 0;
+        color: #888;
+      }
+      .searching svg {
+        margin-bottom: 15px;
+        width: 64px;
+        height: 64px;
+        color: #ddd;
+      }
+
+      /* Toggle Switch */
+      .toggle-container {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        margin: 15px 0;
+        gap: 10px;
+        font-size: 14px;
+        color: #555;
+      }
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 44px;
+        height: 24px;
+      }
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: 0.4s;
+        border-radius: 34px;
+      }
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.4s;
+        border-radius: 50%;
+      }
+      input:checked + .slider {
+        background-color: var(--primary-color);
+      }
+      input:checked + .slider:before {
+        transform: translateX(20px);
+      }
+
+      #ipconfig {
+        animation: slideDown 0.3s ease-out;
+      }
+
+      .footer-info {
+        margin-top: 20px;
+        font-size: 12px;
+        color: #888;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        line-height: 1.6;
+      }
+      .info-pill {
+        padding: 4px 14px;
+        border-radius: 2.5rem;
+        font-weight: 500;
+        font-size: 13px;
+      }
+      .chip-pill {
+        background-color: #495057;
+        color: #ffffff;
+        font-family: monospace;
+      }
+      .board-pill {
+        background-color: #3b82f6;
+        color: white;
+        font-family: monospace;
+      }
+
+      /* Animations */
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      @keyframes slideDown {
+        from {
+          opacity: 0;
+          transform: translateY(-10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* Offline Banner */
+      .offline {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        background-color: var(--danger-color);
+        color: white;
+        text-align: center;
+        padding: 8px;
+        font-size: 14px;
+        z-index: 1000;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+      .offline.show {
+        display: block;
+        animation: slideDown 0.3s;
+      }
+
+      /* Loader */
+      .lds-ellipsis {
+        display: inline-block;
+        position: relative;
+        width: 80px;
+        height: 20px;
+      }
+      .lds-ellipsis div {
+        position: absolute;
+        top: 8px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--primary-color);
+        animation-timing-function: cubic-bezier(0, 1, 1, 0);
+      }
+      .lds-ellipsis div:nth-child(1) {
+        left: 8px;
+        animation: lds-ellipsis1 0.6s infinite;
+      }
+      .lds-ellipsis div:nth-child(2) {
+        left: 8px;
+        animation: lds-ellipsis2 0.6s infinite;
+      }
+      .lds-ellipsis div:nth-child(3) {
+        left: 32px;
+        animation: lds-ellipsis2 0.6s infinite;
+      }
+      .lds-ellipsis div:nth-child(4) {
+        left: 56px;
+        animation: lds-ellipsis3 0.6s infinite;
+      }
+      @keyframes lds-ellipsis1 {
+        0% {
+          transform: scale(0);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+      @keyframes lds-ellipsis3 {
+        0% {
+          transform: scale(1);
+        }
+        100% {
+          transform: scale(0);
+        }
+      }
+      @keyframes lds-ellipsis2 {
+        0% {
+          transform: translate(0, 0);
+        }
+        100% {
+          transform: translate(24px, 0);
+        }
+      }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #ccc;
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #aaa;
+      }
+
+      /* Detail List */
+      .detaillist ul {
+        list-style: none;
+        padding: 0;
+      }
+      .detaillist li {
+        border-bottom: 1px solid #eee;
+        padding: 10px 0;
+        color: #555;
+        font-size: 14px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .detaillist .wifiname {
+        font-size: 20px;
+        font-weight: 600;
+        margin-bottom: 15px;
+        color: var(--primary-color);
+        text-align: center;
+      }
+
+      /* Copyright Footer */
+      .copyright {
+        position: relative; /* Back to flow */
+        margin-top: 20px;
+        font-size: 12px;
+        color: #999;
+        text-align: center;
+        width: 100%;
+        /* Safety padding to avoid overlap with Info Button on mobile */
+        padding-left: 60px;
+        padding-right: 60px;
+        box-sizing: border-box;
+      }
+
+      /* Info Popover */
+      .info-btn {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 45px;
+        height: 45px;
+        background: var(--primary-color);
+        border-radius: 50%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        color: white;
+        box-shadow: 0 4px 10px rgba(76, 175, 80, 0.4);
+        cursor: pointer;
+        z-index: 101;
+        transition: transform 0.3s, box-shadow 0.3s;
+      }
+      .info-btn:hover {
+        transform: scale(1.1);
+        box-shadow: 0 6px 15px rgba(76, 175, 80, 0.5);
+      }
+      .info-popover {
+        position: fixed;
+        bottom: 80px;
+        right: 20px;
+        width: 250px;
+        background: white;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 5px 20px rgba(0, 0, 0, 0.15);
+        display: none;
+        z-index: 100;
+        animation: slideUp 0.3s ease-out;
+      }
+      .info-popover.show {
+        display: block;
+      }
+      .info-popover h3 {
+        margin-bottom: 10px;
+        font-size: 16px;
+        color: var(--primary-color);
+      }
+      .info-popover p {
+        font-size: 13px;
+        color: #666;
+        line-height: 1.5;
+        margin-bottom: 8px;
+      }
+      @keyframes slideUp {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* Responsive Design */
+      @media (max-width: 600px) {
+        body {
+          justify-content: flex-start;
+          padding-top: 40px;
+          padding-bottom: 20px;
+        }
+        .container {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body onload="init()">
+    <div class="offline"><span>No Connection</span></div>
+
+    <!-- Config Tab -->
+    <div class="config active" id="config">
+      <div class="container">
+        <div class="title">ESP-WiFiManager</div>
+
+        <a id="refresh">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            fill="currentColor"
+            viewBox="0 0 16 16"
+          >
+            <path
+              d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"
+            />
+          </svg>
+          Scan Networks
+        </a>
+
+        <ul id="wifilist"></ul>
+
+        <div class="searching">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="currentColor"
+            viewBox="0 0 16 16"
+          >
+            <path
+              d="M3 2a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v13h1.5a.5.5 0 0 1 0 1h-13a.5.5 0 0 1 0-1H3V2zm1 13h8V2H4v13z"
+            />
+            <path d="M9 9a1 1 0 1 0 2 0 1 1 0 0 0-2 0z" />
+          </svg>
+          <h2>No Networks Found</h2>
+          <div class="lds-ellipsis">
+            <div></div>
+            <div></div>
+            <div></div>
+            <div></div>
+          </div>
+          <span>Scanning...</span>
+        </div>
+
+        <div class="wifiinput">
+          <input
+            name="ssid"
+            id="ssid"
+            class="inputcontrol"
+            type="text"
+            placeholder="SSID"
+          />
+          <input
+            name="password"
+            id="password"
+            class="inputcontrol"
+            type="password"
+            placeholder="Password"
+          />
+
+          <div class="toggle-container">
+            <span>Static IP</span>
+            <label class="switch">
+              <input
+                type="checkbox"
+                id="static_ip_toggle"
+                onchange="toggleIPConfig()"
+              />
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div id="ipconfig" style="display: none">
+            <input
+              name="ip"
+              id="ip"
+              class="inputcontrol"
+              type="text"
+              placeholder="IP Address (e.g. 192.168.1.50)"
+            />
+            <input
+              name="gw"
+              id="gw"
+              class="inputcontrol"
+              type="text"
+              placeholder="Gateway (e.g. 192.168.1.1)"
+            />
+            <input
+              name="sn"
+              id="sn"
+              class="inputcontrol"
+              type="text"
+              value="255.255.255.0"
+              placeholder="Subnet (e.g. 255.255.255.0)"
+            />
+            <input
+              name="dns1"
+              id="dns1"
+              class="inputcontrol"
+              type="text"
+              placeholder="DNS 1 (e.g. 8.8.8.8)"
+            />
+            <input
+              name="dns2"
+              id="dns2"
+              class="inputcontrol"
+              type="text"
+              placeholder="DNS 2 (e.g. 8.8.4.4)"
+            />
+          </div>
+
+          <button id="connect" class="btn disabled" disabled>Connect</button>
+        </div>
+      </div>
+      <div class="footer-info" id="footer-info">Loading system info...</div>
+    </div>
+
+    <!-- More Detail Tab -->
+    <div class="moredetail" id="moredetail">
+      <div class="container">
+        <div class="detaillist" id="detaillist"></div>
+        <button
+          class="btn"
+          onclick="switchtab('config')"
+          style="background-color: #777"
+        >
+          Back
+        </button>
+      </div>
+    </div>
+
+    <!-- Success Tab -->
+    <div class="success" id="success">
+      <div class="container" style="text-align: center; align-items: center">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="80"
+          height="80"
+          fill="#4CAF50"
+          viewBox="0 0 16 16"
+          style="margin-bottom: 20px"
+        >
+          <path
+            d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"
+          />
+          <path
+            d="M10.97 4.97a.235.235 0 0 0-.02.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-1.071-1.05z"
+          />
+        </svg>
+        <div class="title" style="margin-bottom: 10px">Saved Successfully</div>
+        <div class="subtitle" style="color: #666">
+          The device will try to connect to the network.
+        </div>
+      </div>
+    </div>
+
+    <!-- Error Tab -->
+    <div class="error" id="error">
+      <div class="container" style="text-align: center; align-items: center">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="80"
+          height="80"
+          fill="#f44336"
+          viewBox="0 0 16 16"
+          style="margin-bottom: 20px"
+        >
+          <path
+            d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"
+          />
+          <path
+            d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"
+          />
+        </svg>
+        <div
+          class="title"
+          style="margin-bottom: 10px; color: var(--danger-color)"
+        >
+          Saved Failed
+        </div>
+        <div
+          class="subtitle"
+          id="error-message"
+          style="color: #666; margin-bottom: 20px"
+        >
+          Something went wrong.
+        </div>
+        <button
+          class="btn"
+          onclick="switchtab('config')"
+          style="background-color: #777; margin-top: 0"
+        >
+          Try Again
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading Tab -->
+    <div class="loading" id="loading">
+      <div class="container" style="text-align: center; align-items: center">
+        <div class="lds-ellipsis">
+          <div></div>
+          <div></div>
+          <div></div>
+          <div></div>
+        </div>
+        <div class="title" style="margin-bottom: 10px; margin-top: 20px">
+          Saving
+        </div>
+        <div class="subtitle" style="color: #666">
+          Please wait while saving your configuration...
+        </div>
+      </div>
+    </div>
+
+    <!-- Copyright -->
+    <div class="copyright">
+      &copy; 2025 WheelClimb@KMUTNB | Developed by Jiranuwat.k
+    </div>
+
+    <!-- Info Popover -->
+    <div class="info-btn" onclick="toggleInfo()">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        fill="currentColor"
+        viewBox="0 0 16 16"
+      >
+        <path
+          d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"
+        />
+        <path
+          d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"
+        />
+      </svg>
+    </div>
+    <div class="info-popover" id="infoPopover">
+      <h3>✨ Project Info</h3>
+      <p>🚀 <strong>ESPWiFiManager</strong></p>
+      <p>📶 ESPWiFiManager is a WiFi configuration library for ESP8266.</p>
+      <p>🏷️ Version: 1.1.0</p>
+      <p style="font-size: 11px; margin-top: 2px; color: #999">
+        👨‍💻 Maintainer: Jiranuwat.k@outlook.com
+      </p>
+    </div>
+
+    <script>
+      const API_PATH = window.location.origin;
+        // const API_PATH = "http://localhost:3000";
+      let isOffline = false;
+
+      const init = () => {
+        scan();
+        getSystemInfo();
+
+        // Close popover when clicking outside
+        document.addEventListener("click", function (event) {
+          const popover = document.getElementById("infoPopover");
+          const btn = document.querySelector(".info-btn");
+          if (
+            popover.classList.contains("show") &&
+            !popover.contains(event.target) &&
+            !btn.contains(event.target)
+          ) {
+            popover.classList.remove("show");
+          }
+        });
+      };
+
+      const toggleInfo = () => {
+        document.getElementById("infoPopover").classList.toggle("show");
+      };
+
+      const scan = () => {
+        fetch(`${API_PATH}/scan`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.length === 0) {
+              showscan([]);
+              setTimeout(scan, 2000);
+            } else {
+              showscan(data);
+            }
+            Toggleoffline(false);
+          })
+          .catch(() => Toggleoffline(true));
+      };
+
+      const getSystemInfo = () => {
+        fetch(`${API_PATH}/info`)
+          .then((res) => res.json())
+          .then((data) => {
+            document.getElementById("footer-info").innerHTML = `
+              <span class="info-pill chip-pill">${data.chipId}</span>
+              <span class="info-pill board-pill">${data.board}</span>
+            `;
+          })
+          .catch((e) => {
+            document.getElementById("footer-info").innerHTML =
+              "System info unavailable";
+          });
+      };
+
+      const showscan = (list) => {
+        if (list.length === 0) {
+          ToggleWifilist(false);
+        } else {
+          ToggleWifilist(true);
+          let ul = document.querySelector("#wifilist");
+          ul.innerHTML = "";
+
+          const unique = {};
+          list.forEach((item) => {
+            if (!unique[item.ssid]) {
+              unique[item.ssid] = { ...item, aps: [] };
+            } else {
+              if (item.rssi > unique[item.ssid].rssi) {
+                unique[item.ssid].rssi = item.rssi;
+                unique[item.ssid].secure = item.secure;
+                unique[item.ssid].bssid = item.bssid;
+                unique[item.ssid].channel = item.channel;
+              }
+            }
+            unique[item.ssid].aps.push({
+              channel: item.channel,
+              bssid: item.bssid,
+              rssi: item.rssi,
+            });
+          });
+
+          let sortedList = Object.values(unique);
+          sortedList.sort((a, b) => b.rssi - a.rssi);
+
+          sortedList.forEach((item) => {
+            let li = document.createElement("li");
+
+            let nameLink = document.createElement("a");
+            nameLink.classList.add("wifiitem");
+            nameLink.innerText = item.ssid;
+            nameLink.onclick = () => Setssid(item.ssid);
+            li.appendChild(nameLink);
+
+            let iconGroup = document.createElement("div");
+            iconGroup.classList.add("icongroup");
+
+            // RSSI Icon
+            let rssiIcon = getRSSIIcon(item.rssi);
+            rssiIcon.setAttribute("title", `${rssitopercen(item.rssi)}%`);
+            iconGroup.appendChild(rssiIcon);
+
+            // Lock Icon
+            if (item.secure != 7) {
+              let lockIcon = getLockIcon(true);
+              lockIcon.setAttribute("title", encryptionType(item.secure));
+              iconGroup.appendChild(lockIcon);
+            }
+
+            // Info Icon
+            let infoIconContainer = document.createElement("div");
+            infoIconContainer.style.cursor = "pointer";
+            infoIconContainer.innerHTML =
+              '<svg class="svg-icon" viewBox="0 0 20 20"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 14a6 6 0 110-12 6 6 0 010 12zm0-9a1 1 0 011 1v4a1 1 0 11-2 0V8a1 1 0 011-1zm0-3a1 1 0 110 2 1 1 0 010-2z"/></svg>';
+            infoIconContainer.onclick = () => moredetail(item);
+            iconGroup.appendChild(infoIconContainer);
+
+            li.appendChild(iconGroup);
+            ul.appendChild(li);
+          });
+        }
+      };
+
+      const Setssid = (ssid) => {
+        document.querySelector("#ssid").value = ssid;
+        document.querySelector("#password").focus();
+        checkInput();
+      };
+
+      const moredetail = (item) => {
+        switchtab("moredetail");
+        let apListHTML = "";
+        if (item.aps) {
+          item.aps.sort((a, b) => b.rssi - a.rssi);
+          item.aps.forEach((ap) => {
+            apListHTML += `
+                    <li style="flex-direction:column; align-items:flex-start; gap:2px; padding: 8px 0;">
+                        <div style="display:flex; justify-content:space-between; width:100%">
+                            <span>Ch: ${ap.channel}</span>
+                            <span>${ap.bssid}</span>
+                        </div>
+                        <div style="font-size:12px; color:#999; text-align:right; width:100%">
+                            ${ap.rssi} dBm
+                        </div>
+                    </li>`;
+          });
+        } else {
+          apListHTML = `<li><span>BSSID</span> <span>${item.bssid}</span></li>
+                        <li><span>Channel</span> <span>${item.channel}</span></li>`;
+        }
+
+        document.querySelector("#detaillist").innerHTML = `
+                <div class="wifiname">${item.ssid}</div>
+                <ul>
+                    <li><span>Avg Signal</span> <span>${
+                      item.rssi
+                    } dBm (${rssitopercen(item.rssi)}%)</span></li>
+                    <li><span>Security</span> <span>${encryptionType(
+                      item.secure
+                    )}</span></li>
+                    <li><span>Hidden</span> <span>${
+                      item.hidden ? "Yes" : "No"
+                    }</span></li>
+                </ul>
+                <div style="margin-top:15px; font-weight:600; font-size:14px; color:#666; border-bottom: 2px solid #eee; padding-bottom:5px;">Access Points</div>
+                <ul style="max-height: 200px; overflow-y: auto;">
+                    ${apListHTML}
+                </ul>`;
+      };
+
+      const ToggleWifilist = (show) => {
+        document.querySelector("#wifilist").style.display = show
+          ? "block"
+          : "none";
+        document.querySelector(".searching").style.display = show
+          ? "none"
+          : "flex";
+      };
+
+      const Toggleoffline = (show) => {
+        isOffline = show;
+        const el = document.querySelector(".offline");
+        if (show) el.classList.add("show");
+        else el.classList.remove("show");
+        checkInput();
+      };
+
+      const rssitopercen = (rssi) => {
+        if (rssi <= -100) return 0;
+        if (rssi >= -50) return 100;
+        return 2 * (rssi + 100);
+      };
+
+      const encryptionType = (type) => {
+        switch (type) {
+          case 2:
+            return "WPA/PSK";
+          case 4:
+            return "WPA2/PSK";
+          case 5:
+            return "WEP";
+          case 7:
+            return "Open";
+          case 8:
+            return "WPA/WPA2/PSK";
+          default:
+            return "Unknown";
+        }
+      };
+
+      const switchtab = (tabId) => {
+        document
+          .querySelectorAll(".moredetail, .config, .success, .error, .loading")
+          .forEach((el) => el.classList.remove("active"));
+        document.getElementById(tabId).classList.add("active");
+      };
+
+      const toggleIPConfig = () => {
+        const ipConfig = document.getElementById("ipconfig");
+        ipConfig.style.display = document.getElementById("static_ip_toggle")
+          .checked
+          ? "block"
+          : "none";
+        checkInput();
+      };
+
+      const isValidIP = (ip) => {
+        if (!ip) return true; // Allow empty if handled elsewhere, but for strict validation we might want to check if required
+        // Simple IPv4 regex
+        const regex =
+          /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+        return regex.test(ip);
+      };
+
+      const checkInput = () => {
+        const btn = document.querySelector("#connect");
+        let valid = true;
+
+        if (isOffline) valid = false;
+
+        // Check SSID
+        if (document.querySelector("#ssid").value.length === 0) valid = false;
+
+        // Check Static IP fields if enabled
+        if (document.getElementById("static_ip_toggle").checked) {
+          const fields = ["ip", "gw", "sn", "dns1", "dns2"];
+          let hasIP = false;
+          fields.forEach((id) => {
+            const el = document.getElementById(id);
+            const val = el.value.trim();
+            if (val.length > 0) {
+              if (!isValidIP(val)) {
+                el.classList.add("is-invalid");
+                valid = false;
+              } else {
+                el.classList.remove("is-invalid");
+              }
+              if (id === "ip") hasIP = true;
+            } else {
+              el.classList.remove("is-invalid");
+            }
+          });
+          // If enabled, at least IP should be present? The user request just said "check if incorrect format".
+          // I will enforce IP presence if toggle is on to be safe, or just format.
+          // Let's assume just format for now to be less intrusive, unless it's the IP field itself which is usually required.
+          if (!hasIP) valid = false;
+        }
+
+        if (valid) {
+          btn.classList.remove("disabled");
+          btn.removeAttribute("disabled");
+        } else {
+          btn.classList.add("disabled");
+          btn.setAttribute("disabled", "true");
+        }
+      };
+
+      // Icons Helper with more accurate representation
+      const getRSSIIcon = (rssi) => {
+        const div = document.createElement("div");
+        let path = "";
+        let percentage = rssitopercen(rssi);
+
+        // Base path for the dot (0-20%)
+        // We can use a single SVG with multiple paths/opacity for a proper icon, but let's select path based on strength
+        if (percentage > 75) {
+          // 3 Curves
+          path = `<path d="M15.384 6.115a.485.485 0 0 0-.047-.736A12.444 12.444 0 0 0 8 3C5.259 3 2.723 3.882.663 5.379a.485.485 0 0 0-.048.736.518.518 0 0 0 .668.05A11.448 11.448 0 0 1 8 4c2.507 0 4.827.802 6.716 2.164.205.148.49.13.668-.049z"/><path d="M13.229 8.271a.482.482 0 0 0-.063-.745A9.455 9.455 0 0 0 8 6c-1.905 0-3.68.56-5.166 1.526a.48.48 0 0 0-.063.745.525.525 0 0 0 .652.065A8.46 8.46 0 0 1 8 7a8.46 8.46 0 0 1 4.576 1.336c.206.132.48.108.653-.065zm-2.183 2.183c.226-.226.185-.605-.1-.75A6.473 6.473 0 0 0 8 9c-1.06 0-2.062.254-2.946.704-.285.145-.326.524-.1.75l.015.015c.16.16.407.19.611.09A5.478 5.478 0 0 1 8 10c.868 0 1.69.201 2.42.56.203.1.45.07.61-.091l.016-.015zM9.06 12.44c.196-.196.198-.52-.04-.66A1.99 1.99 0 0 0 8 11.5a1.99 1.99 0 0 0-1.02.28c-.238.14-.236.464-.04.66l.706.706a.5.5 0 0 0 .707 0l.707-.707z"/>`;
+        } else if (percentage > 50) {
+          // 2 Curves
+          path = `<path d="M13.229 8.271a.482.482 0 0 0-.063-.745A9.455 9.455 0 0 0 8 6c-1.905 0-3.68.56-5.166 1.526a.48.48 0 0 0-.063.745.525.525 0 0 0 .652.065A8.46 8.46 0 0 1 8 7a8.46 8.46 0 0 1 4.576 1.336c.206.132.48.108.653-.065zm-2.183 2.183c.226-.226.185-.605-.1-.75A6.473 6.473 0 0 0 8 9c-1.06 0-2.062.254-2.946.704-.285.145-.326.524-.1.75l.015.015c.16.16.407.19.611.09A5.478 5.478 0 0 1 8 10c.868 0 1.69.201 2.42.56.203.1.45.07.61-.091l.016-.015zM9.06 12.44c.196-.196.198-.52-.04-.66A1.99 1.99 0 0 0 8 11.5a1.99 1.99 0 0 0-1.02.28c-.238.14-.236.464-.04.66l.706.706a.5.5 0 0 0 .707 0l.707-.707z"/>`;
+        } else if (percentage > 25) {
+          // 1 Curve
+          path = `<path d="M11.046 10.454c.226-.226.185-.605-.1-.75A6.473 6.473 0 0 0 8 9c-1.06 0-2.062.254-2.946.704-.285.145-.326.524-.1.75l.015.015c.16.16.407.19.611.09A5.478 5.478 0 0 1 8 10c.868 0 1.69.201 2.42.56.203.1.45.07.611-.091l.015-.015zM9.06 12.44c.196-.196.198-.52-.04-.66A1.99 1.99 0 0 0 8 11.5a1.99 1.99 0 0 0-1.02.28c-.238.14-.236.464-.04.66l.706.706a.5.5 0 0 0 .707 0l.707-.707z"/>`;
+        } else {
+          // Dot
+          path = `<path d="M9.06 12.44c.196-.196.198-.52-.04-.66A1.99 1.99 0 0 0 8 11.5a1.99 1.99 0 0 0-1.02.28c-.238.14-.236.464-.04.66l.706.706a.5.5 0 0 0 .707 0l.707-.707z"/>`;
+        }
+
+        div.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">${path}</svg>`;
+        return div.firstChild;
+      };
+
+      const getLockIcon = (locked) => {
+        const div = document.createElement("div");
+        div.innerHTML = locked
+          ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM5 8h6a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/></svg>'
+          : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M11 1a2 2 0 0 0-2 2v4a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h5V3a3 3 0 0 1 6 0v4a.5.5 0 0 1-1 0V3a2 2 0 0 0-2-2zM3 8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1H3z"/></svg>';
+        return div.firstChild;
+      };
+
+      document.querySelector("#refresh").addEventListener("click", scan);
+      document.querySelector("#ssid").addEventListener("input", checkInput);
+      ["ip", "gw", "sn", "dns1", "dns2"].forEach((id) => {
+        document.getElementById(id).addEventListener("input", checkInput);
+      });
+
+      document.querySelector("#connect").addEventListener("click", () => {
+        let ssid = document.querySelector("#ssid"),
+          pass = document.querySelector("#password"),
+          ip = document.querySelector("#ip"),
+          gw = document.querySelector("#gw"),
+          sn = document.querySelector("#sn"),
+          dns1 = document.querySelector("#dns1"),
+          dns2 = document.querySelector("#dns2");
+
+        const formData = new FormData();
+        formData.append("ssid", ssid.value);
+        formData.append("password", pass.value);
+
+        if (document.getElementById("static_ip_toggle").checked) {
+          if (ip.value) formData.append("ip", ip.value);
+          if (gw.value) formData.append("gw", gw.value);
+          if (sn.value) formData.append("sn", sn.value);
+          if (dns1.value) formData.append("dns1", dns1.value);
+          if (dns2.value) formData.append("dns2", dns2.value);
+        }
+
+        ssid.value = "";
+        pass.value = "";
+
+        switchtab("loading"); // Show loading screen
+
+        const fetchWithTimeout = (url, options, timeout = 10000) => {
+          return Promise.race([
+            fetch(url, options),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Timeout")), timeout)
+            ),
+          ]);
+        };
+
+        fetchWithTimeout(`${API_PATH}/save/wificonfig`, {
+          method: "POST",
+          body: formData,
+        })
+          .then((res) => {
+            if (res.ok) {
+              return res.text().then((text) => {
+                if (text === "Done.") {
+                  fetch(`${API_PATH}/restart`).then(() => switchtab("success"));
+                } else {
+                  showError("Response message : " + text);
+                }
+              });
+            } else {
+              return res.text().then((text) => {
+                showError(
+                  `${res.status} ${res.statusText}\nResponse message : ${text}`
+                );
+              });
+            }
+          })
+          .catch((err) => {
+            if (err.message === "Timeout") {
+              showError("Error: Connection Timeout");
+            } else {
+              showError("Connection Failed");
+            }
+          });
+      });
+
+      const showError = (msg) => {
+        document.getElementById("error-message").innerText = msg;
+        switchtab("error");
+      };
+
+      setInterval(scan, 10000);
+    </script>
+  </body>
+</html>
