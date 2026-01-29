@@ -148,7 +148,7 @@ static const char boardInfoPage[] PROGMEM = R"(
             return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
         }
 
-        fetch('/info')
+        fetch('/update/info')
             .then(response => response.json())
             .then(data => {
                 // System

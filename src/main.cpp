@@ -1,39 +1,49 @@
 #include <Arduino.h>
 #include "Config.h"
-#include <SPI.h>
-#include <MFRC522.h>
-#include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <ESPAsyncUpdateServer.h>
-#include <ESPWiFiManager.h>
-#include <LittleFS.h>
-#include "FS.h"
-#include <time.h>
-#include <ESPmDNS.h>
-#include <Ticker.h>
+#include "Global.h"
 #include "Filehelper.h"
 
-MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
-MFRC522 mfrc522_2(SS2_PIN, RST_PIN);  // Create MFRC522 instance for second reader
+MFRC522 mfrc522_IN(SS_PIN, RST_PIN);
+MFRC522 mfrc522_OUT(SS2_PIN, RST_PIN);
 AsyncWebServer server(80);
+
+// --- AUTHENTICATION GLOBALS ---
+String adminSessionUID = ""; // Stores UID of currently logged in admin
+String adminSessionRole = ""; // Stores readable role name (MainKey / Admin)
+
+// --- WEB SESSION GLOBALS (New) ---
+String webSessionToken = ""; 
+const char* SESSION_COOKIE_NAME = "ESPSESSIONID";
+
+// --- ANTI-PASSBACK ---
+// We need to keep track of user state in memory for speed, but also in file for persistence
+// For this simple implementation, we check file on every scan (might be slow) or load to RAM?
+// Given ESP32, RAM is okay for small user base. Let's use File for persistence.
+#define STATE_OUTSIDE 0
+#define STATE_INSIDE 1
+
+bool checkUserWebAuth(AsyncWebServerRequest *request) {
+  if (request->hasHeader("Cookie")) {
+    String cookie = request->header("Cookie");
+    if (cookie.indexOf(SESSION_COOKIE_NAME + String("=") + webSessionToken) != -1 && webSessionToken != "") {
+      return true;
+    }
+  }
+  return false;
+}
+
+unsigned long adminSessionTimer = 0;
+const unsigned long ADMIN_SESSION_TIMEOUT = 300000; // 5 Minutes auto logout
+bool waitingForAdminLogin = false;
+unsigned long waitLoginTimer = 0;
+
 Ticker Tick;
 DNSServer dns;
 ESPAsyncUpdateServer updateServer(&server, LittleFS);
-ESPWiFiManager wifimanager(&server,&dns,LittleFS);
+ESPWiFiManager wifimanager(&server, &dns, LittleFS);
 
-const char* http_username = "admin";
-const char* http_password = "admin";
-long timezone = 7;
-byte daysavetime = 0;
-
-const char* PARAM_INPUT_1 = "uid";
-const char* PARAM_INPUT_2 = "role";
-const char* PARAM_INPUT_3 = "delete";
-const char* PARAM_INPUT_4 = "delete-user";
-
-String inputMessage;
-String inputParam;
+uint8_t mfrc522_in_version = 0;
+uint8_t mfrc522_out_version = 0;
 
 unsigned long currentMillis = 0;
 bool doorActive = false;
@@ -48,333 +58,693 @@ int deniedBeepState = 0; // 0=นิ่ง, 1-6=ขั้นตอนการ�
 unsigned long deniedBeepTimer = 0;
 const long deniedBeepInterval = 100;
 
-void notFound(AsyncWebServerRequest *request) {
-    request->send(404, "text/plain", "Not found");
+void notFound(AsyncWebServerRequest *request)
+{
+  request->send(404, "text/plain", "Not found");
 }
 
-String processor(const String& var){
-  return String("HTTP GET request sent to your ESP on input field (" 
-                + inputParam + ") with value: " + inputMessage +
-                "<br><a href=\"/\"><button class=\"button button-home\">Return to Home Page</button></a>");
+void initRFIDReader()
+{
+  mfrc522_IN.PCD_Init();
+  mfrc522_OUT.PCD_Init();
+  mfrc522_IN.PCD_DumpVersionToSerial();
+  mfrc522_OUT.PCD_DumpVersionToSerial();
+  mfrc522_in_version = mfrc522_IN.PCD_ReadRegister(MFRC522::VersionReg);
+  mfrc522_out_version = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
+  Serial.println(F("Scan PICC to see UID"));
 }
 
-void initRFIDReader() {
-  mfrc522.PCD_Init();    // Init MFRC522 board.
-  mfrc522.PCD_DumpVersionToSerial();
-  // MFRC522Debug::PCD_DumpVersionToSerial(mfrc522, Serial);	// Show details of PCD - MFRC522 Card Reader details.
-	Serial.println(F("Scan PICC to see UID"));
-}
-
-void initLittleFS() {
-  if(!LittleFS.begin()){
+int initLittleFS()
+{
+  if (!LittleFS.begin(true))
+  {
     Serial.println("An Error has occurred while mounting LittleFS");
-        return;
+    return LittleFS_ERR_MOUNT;
   }
-  // If the log.txt file doesn't exist, create a file on the LittleFS and write the header
-  File file = LittleFS.open("/log.txt");
-  if(!file) {
-    Serial.println("log.txt file doesn't exist");
+  // 1. readerlogs.txt (Old log.txt)
+  File file = LittleFS.open("/readerlogs.txt");
+  if (!file)
+  {
+    Serial.println("readerlogs.txt file doesn't exist");
     Serial.println("Creating file...");
-    writeFile(LittleFS, "/log.txt", "Date,Time,UID,Role\r\n");
-  }
-  else {
-    Serial.println("log.txt file already exists");  
+    writeFile(LittleFS, "/readerlogs.txt", "Date,Time,ReaderID,UID,Role,Ref.Verify\n");
   }
   file.close();
-  // If the users.txt file doesn't exist, create a file on the LittleFS and write the header
+
+  // 2. users.txt
   file = LittleFS.open("/users.txt");
-  if(!file) {
+  if (!file)
+  {
     Serial.println("users.txt file doesn't exist");
     Serial.println("Creating file...");
-    writeFile(LittleFS, "/users.txt", "UID,Role\r\n");
-  }
-  else {
-    Serial.println("users.txt file already exists");  
+    writeFile(LittleFS, "/users.txt", "UID,Role,Prefix,FullNameEN,FullNameTH,Code,Gender,Age,StartDate,ExpireDate\n");
   }
   file.close();
-}
-void initWifi() {
-  // Connect to Wi-Fi
-  wifimanager.on(WM_CONFIG,[](){
 
+  // 3. userslog.txt
+  file = LittleFS.open("/userslog.txt");
+  if (!file)
+  {
+    Serial.println("userslog.txt file doesn't exist");
+    Serial.println("Creating file...");
+    writeFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID\n");
+  }
+  file.close();
+
+  // 4. systemlog.txt
+  file = LittleFS.open("/systemlog.txt");
+  if (!file)
+  {
+    Serial.println("systemlog.txt file doesn't exist");
+    Serial.println("Creating file...");
+    writeFile(LittleFS, "/systemlog.txt", "Date,Time,Code,Msg\n");
+  }
+  file.close();
+
+  // 5. usage_stats.txt (New)
+  file = LittleFS.open("/usage_stats.txt");
+  if (!file)
+  {
+    Serial.println("usage_stats.txt file doesn't exist");
+    Serial.println("Creating file...");
+    writeFile(LittleFS, "/usage_stats.txt", "UID,Count,LastAccess\n");
+  }
+  file.close();
+
+  // 5. usage_stats.txt (New)
+  file = LittleFS.open("/usage_stats.txt");
+  if (!file)
+  {
+    Serial.println("usage_stats.txt file doesn't exist");
+    Serial.println("Creating file...");
+    writeFile(LittleFS, "/usage_stats.txt", "UID,Count,LastAccess\n");
+  }
+  file.close();
+
+  // 6. user_state.txt (New - Anti-Passback)
+  file = LittleFS.open("/user_state.txt");
+  if (!file)
+  {
+    Serial.println("user_state.txt file doesn't exist");
+    Serial.println("Creating file...");
+    writeFile(LittleFS, "/user_state.txt", "UID,State\n");
+  }
+  file.close();
+
+  return LittleFS_ERR_OK;
+}
+
+void initWifi()
+{
+  // Connect to Wi-Fi
+  wifimanager.on(WM_CONFIG, []() {
   });
 
-  wifimanager.on(WM_ASYNC_CONFIG,[](){
+  wifimanager.on(WM_ASYNC_CONFIG, [](){
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     Tick.attach_ms(200,[](){
       digitalWrite(LED_BUILTIN,!digitalRead(LED_BUILTIN));
-    });
-  });
-  wifimanager.on(WM_SUCCESS,[](){
+    }); });
+  wifimanager.on(WM_SUCCESS, []()
+                 {
     if (MDNS.begin("rfid-doorlock")) {
       Serial.println("MDNS started");
     }
     WiFi.hostname("rfid-doorlock");
     Serial.println("Success!");
     Tick.detach();
-    digitalWrite(LED_BUILTIN,HIGH);
-  });
+    digitalWrite(LED_BUILTIN,HIGH); });
   updateServer.begin("/update", "Admin", "Admin");
   wifimanager.begin("Manager");
-  
-  updateServer.on(UPDATE_BEGIN, [](const OTA_UpdateType type, int &result){
+
+  updateServer.on(UPDATE_BEGIN, [](const OTA_UpdateType type, int &result)
+                  {
       Serial.print("Update Begin: ");
-      Serial.println(type == OTA_UpdateType::OTA_FIRMWARE ? "Firmware" : "Filesystem");
-  });
-  updateServer.on(UPDATE_END, [](const OTA_UpdateType type, int &result){
+      Serial.println(type == OTA_UpdateType::OTA_FIRMWARE ? "Firmware" : "Filesystem"); });
+  updateServer.on(UPDATE_END, [](const OTA_UpdateType type, int &result)
+                  {
       Serial.print("Update End. Result: ");
-      Serial.println(result == OTA_UpdateResult::OTA_UPDATE_OK ? "OK" : "Error");
-  });
-  updateServer.begin("/update" "Admin", "Admin");
+      Serial.println(result == OTA_UpdateResult::OTA_UPDATE_OK ? "OK" : "Error"); });
+  updateServer.begin("/update", "Admin", "Admin");
 }
 
-void initTime() {
+void initTime()
+{
   Serial.println("CInitializing Time");
   struct tm tmstruct;
   delay(2000);
   tmstruct.tm_year = 0;
   getLocalTime(&tmstruct, 5000);
   Serial.printf(
-    "Time and Date right now is : %d-%02d-%02d %02d:%02d:%02d\n", (tmstruct.tm_year) + 1900, (tmstruct.tm_mon) + 1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min,
-    tmstruct.tm_sec
-  );
+      "Time and Date right now is : %d-%02d-%02d %02d:%02d:%02d\n", (tmstruct.tm_year) + 1900, (tmstruct.tm_mon) + 1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min,
+      tmstruct.tm_sec);
 }
 
-// void initSDCard() {
-//   // CS pin = 15
-//   if (!SD.begin(15)) {
-//     Serial.println("Card Mount Failed");
-//     return;
-//   }
-//   uint8_t cardType = SD.cardType();
-
-//   if (cardType == CARD_NONE) {
-//     Serial.println("No SD card attached");
-//     return;
-//   }
-
-//   Serial.print("SD Card Type: ");
-//   if (cardType == CARD_MMC) {
-//     Serial.println("MMC");
-//   } else if (cardType == CARD_SD) {
-//     Serial.println("SDSC");
-//   } else if (cardType == CARD_SDHC) {
-//     Serial.println("SDHC");
-//   } else {
-//     Serial.println("UNKNOWN");
-//   }
-
-//   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-//   Serial.printf("SD Card Size: %lluMB\n", cardSize);
-
-//   // If the log.txt file doesn't exist, create a file on the SD card and write the header
-//   File file = SD.open("/log.txt");
-//   if(!file) {
-//     Serial.println("log.txt file doesn't exist");
-//     Serial.println("Creating file...");
-//     writeFile(SD, "/log.txt", "Date,Time,UID,Role\r\n");
-//   }
-//   else {
-//     Serial.println("log.txt file already exists");  
-//   }
-//   file.close();
-
-//   // If the users.txt file doesn't exist, create a file on the SD card and write the header
-//   file = SD.open("/users.txt");
-//   if(!file) {
-//     Serial.println("users.txt file doesn't exist");
-//     Serial.println("Creating file...");
-//     writeFile(SD, "/users.txt", "UID,Role\r\n");
-//   }
-//   else {
-//     Serial.println("users.txt file already exists");  
-//   }
-//   file.close();
-// }
-
-void handlePeripherals() {
+void handlePeripherals()
+{
   currentMillis = millis();
 
-  // ตรวจสอบเวลาประตู (ถ้าเปิดอยู่ และเวลาครบกำหนด ให้ปิด)
   if (doorActive && (currentMillis - doorTimer >= doorOpenDuration)) {
     digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
     doorActive = false;
     Serial.println("Door Locked (Time out)");
   }
 
-  // ตรวจสอบ Effect ผ่าน (เสียง beep ยาว + LED)
   if (successEffectActive && (currentMillis - successEffectTimer >= successEffectDuration)) {
     digitalWrite(BUZZER_PIN, BUZZER_OFF);
     digitalWrite(LED_STA_PIN, LED_STA_OFF);
     successEffectActive = false;
   }
 
-  // ตรวจสอบ Effect ไม่ผ่าน (เสียง beep สั้นๆ 3 ครั้ง)
   if (deniedBeepState > 0 && (currentMillis - deniedBeepTimer >= deniedBeepInterval)) {
-    deniedBeepTimer = currentMillis; // รีเซ็ตเวลา
+    deniedBeepTimer = currentMillis; 
     switch (deniedBeepState) {
-      case 1: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
-      case 2: digitalWrite(BUZZER_PIN, BUZZER_OFF);  digitalWrite(LED_STA_PIN, LED_STA_OFF);  break;
-      case 3: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
-      case 4: digitalWrite(BUZZER_PIN, BUZZER_OFF);  digitalWrite(LED_STA_PIN, LED_STA_OFF);  break;
-      case 5: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
-      case 6: digitalWrite(BUZZER_PIN, BUZZER_OFF);  digitalWrite(LED_STA_PIN, LED_STA_OFF);  break;
+    case 1: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
+    case 2: digitalWrite(BUZZER_PIN, BUZZER_OFF); digitalWrite(LED_STA_PIN, LED_STA_OFF); break;
+    case 3: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
+    case 4: digitalWrite(BUZZER_PIN, BUZZER_OFF); digitalWrite(LED_STA_PIN, LED_STA_OFF); break;
+    case 5: digitalWrite(BUZZER_PIN, BUZZER_ON); digitalWrite(LED_STA_PIN, LED_STA_ON); break;
+    case 6: digitalWrite(BUZZER_PIN, BUZZER_OFF); digitalWrite(LED_STA_PIN, LED_STA_OFF); break;
     }
     deniedBeepState++;
-    if (deniedBeepState > 7) deniedBeepState = 0; // จบการทำงาน
+    if (deniedBeepState > 7) deniedBeepState = 0; 
   }
 }
 
-void setup() {
-  Serial.begin(115200);  // Initialize serial communication
-  while (!Serial);       // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4).
+// *** RESTORED LOGIN HANDLERS (Fix for Logout & Login Page) ***
+void setup()
+{
+  Serial.begin(115200);
   SPI.begin();
-  initRFIDReader();
   initLittleFS();
   initWifi();
   configTime(3600 * timezone, daysavetime * 3600, "time.nist.gov", "0.pool.ntp.org", "1.pool.ntp.org");
   initTime();
-  // initSDCard();
-  if (!MDNS.begin("rfid-doorlock")) {
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-    Serial.println("mDNS responder started : rfid-doorlock.local");
-    MDNS.addService("http", "tcp", 80);
+  initRFIDReader();
+
+  initRFIDReader();
+
+  // Log Startup with Reason
+  esp_reset_reason_t reason = esp_reset_reason();
+  String reasonStr;
+  switch (reason) {
+      case ESP_RST_POWERON: reasonStr = "Power On"; break;
+      case ESP_RST_EXT: reasonStr = "External Pin (RST)"; break;
+      case ESP_RST_SW: reasonStr = "Software Reset"; break;
+      case ESP_RST_PANIC: reasonStr = "Exception/Panic"; break;
+      case ESP_RST_INT_WDT: reasonStr = "Interrupt WDT"; break;
+      case ESP_RST_TASK_WDT: reasonStr = "Task WDT"; break;
+      case ESP_RST_WDT: reasonStr = "Other WDT"; break;
+      case ESP_RST_DEEPSLEEP: reasonStr = "Wake Deep Sleep"; break;
+      case ESP_RST_BROWNOUT: reasonStr = "Brownout"; break;
+      case ESP_RST_SDIO: reasonStr = "SDIO"; break;
+      default: reasonStr = "Unknown"; break;
   }
-  pinMode(LED_STA_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(DOORLOCK_PIN, OUTPUT);
-  digitalWrite(LED_STA_PIN, LED_STA_OFF);
-  digitalWrite(BUZZER_PIN, BUZZER_OFF);
-  digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
-  // Route for root / web page
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    if(!request->authenticate(http_username, http_password)) 
-      return request->requestAuthentication();
-    request->send(LittleFS, "/full-log.html");
-  });
-  // Route for root /add-user web page
-  server.on("/add-user", HTTP_GET, [](AsyncWebServerRequest *request){
-    if(!request->authenticate(http_username, http_password)) 
-      return request->requestAuthentication();
-    request->send(LittleFS, "/add-user.html");
-  });
-  // Route for root /manage-users web page
-  server.on("/manage-users", HTTP_GET, [](AsyncWebServerRequest *request){
-    if(!request->authenticate(http_username, http_password)) 
-      return request->requestAuthentication();
-    request->send(LittleFS, "/manage-users.html");
-  });
 
-  // Loads the log.txt file
-  server.on("/view-log", HTTP_GET, [](AsyncWebServerRequest *request){
-    if(!request->authenticate(http_username, http_password)) 
-      return request->requestAuthentication();
-    request->send(LittleFS, "/log.txt", "text/plain", false);
-  });
-  // Loads the users.txt file
-  server.on("/view-users", HTTP_GET, [](AsyncWebServerRequest *request){
-    if(!request->authenticate(http_username, http_password)) 
-      return request->requestAuthentication();
-    request->send(LittleFS, "/users.txt", "text/plain", false);
-  });
+  maintainLogFile(LittleFS, "/systemlog.txt", "Date,Time,Code,Msg");
+  appendFile(LittleFS, "/systemlog.txt", (String("INFO,Boot: ") + reasonStr).c_str());
+
+  if (!MDNS.begin("rfid-doorlock")) Serial.println("Error setting up MDNS responder!");
+  else { Serial.println("mDNS responder started : rfid-doorlock.local"); MDNS.addService("http", "tcp", 80); }
   
-  // Receive HTTP GET requests on <ESP_IP>/get?input=<inputMessage>
-  server.on("/get", HTTP_GET, [] (AsyncWebServerRequest *request) {
-    if(!request->authenticate(http_username, http_password)) 
-      return request->requestAuthentication();
-    // GET input1 and input2 value on <ESP_IP>/get?input1=<inputMessage1>&input2=<inputMessage2>
-    if (request->hasParam(PARAM_INPUT_1) && request->hasParam(PARAM_INPUT_2)) {
-      inputMessage = request->getParam(PARAM_INPUT_1)->value();
-      inputParam = String(PARAM_INPUT_1);
-      inputMessage += " " + request->getParam(PARAM_INPUT_2)->value();
-      inputParam += " " + String(PARAM_INPUT_2);
+  pinMode(LED_STA_PIN, OUTPUT); pinMode(BUZZER_PIN, OUTPUT); pinMode(DOORLOCK_PIN, OUTPUT);
+  digitalWrite(LED_STA_PIN, LED_STA_OFF); digitalWrite(BUZZER_PIN, BUZZER_OFF); digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
 
-      String finalMessageInput = String(request->getParam(PARAM_INPUT_1)->value()) + "," + String(request->getParam(PARAM_INPUT_2)->value());
-      appendUserFile(LittleFS, "/users.txt", finalMessageInput.c_str());
-    }
-    else if (request->hasParam(PARAM_INPUT_3)) {
-      inputMessage = request->getParam(PARAM_INPUT_3)->value();
-      inputParam = String(PARAM_INPUT_3);
-      if(request->getParam(PARAM_INPUT_3)->value()=="users") {
-        deleteFile(LittleFS, "/users.txt");
-      }
-      else if(request->getParam(PARAM_INPUT_3)->value()=="log") {
-        deleteFile(LittleFS, "/log.txt");
-      }
-    }
-    else if (request->hasParam(PARAM_INPUT_4)) {
-      inputMessage = request->getParam(PARAM_INPUT_4)->value();
-      inputParam = String(PARAM_INPUT_4);
-      deleteLineFromFile(LittleFS, "/users.txt", inputMessage.toInt());
-    }
-    else {
-      inputMessage = "No message sent";
-      inputParam = "none";
-    }
-    request->send(LittleFS, "/get.html", "text/html", false, processor);
+  // 1. Login Page (GET)
+  server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
+     String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>Login</title>";
+     html += "<style>";
+     html += "body{font-family:'Segoe UI',sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}";
+     html += ".login-card{background:white;padding:40px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.1);width:100%;max-width:320px;text-align:center;}";
+     html += "h2{margin:0 0 20px;color:#1a73e8;}";
+     html += "input{width:100%;padding:12px;margin-bottom:15px;border:1px solid #ddd;border-radius:8px;box-sizing:border-box;font-size:16px;}";
+     html += "button{width:100%;padding:12px;background:#1a73e8;color:white;border:none;border-radius:8px;font-size:16px;cursor:pointer;font-weight:600;transition:0.3s;}";
+     html += "button:hover{background:#1557b0;}";
+     html += ".error{color:red;font-size:14px;display:none;margin-bottom:15px;}";
+     html += "</style></head><body>";
+     html += "<div class='login-card'><h2>Web Console Login</h2>";
+     html += "<p class='error' id='err'>Invalid Username or Password</p>";
+     html += "<form onsubmit='event.preventDefault(); login();'>";
+     html += "<input type='text' id='user' placeholder='Username' required autocomplete='username'>";
+     html += "<input type='password' id='pass' placeholder='Password' required autocomplete='current-password'>";
+     html += "<button type='submit'>Login</button></form></div>";
+     html += "<script>";
+     html += "async function login(){";
+     html += " document.getElementById('err').style.display='none';";
+     html += " let u=document.getElementById('user').value; let p=document.getElementById('pass').value;";
+     html += " try{ let res = await fetch('/api/login/web', {method:'POST', body: new URLSearchParams({user:u, pass:p})});";
+     html += " if(res.ok){ window.location.href='/'; } else { document.getElementById('err').style.display='block'; }";
+     html += " }catch(e){ alert('Network Error'); }}";
+     html += "</script></body></html>";
+     request->send(200, "text/html", html);
   });
 
-   // Serve Static files
-  server.serveStatic("/style.css", LittleFS, "/style.css");
-  // server.serveStatic("/style.css", LittleFS, "/style.css").setCacheControl("max-age=600");
-  // Start server
+  // 2. Login Process (POST)
+  server.on("/api/login/web", HTTP_POST, [](AsyncWebServerRequest *request) {
+     String user = request->hasParam("user", true) ? request->getParam("user", true)->value() : "";
+     String pass = request->hasParam("pass", true) ? request->getParam("pass", true)->value() : "";
+     
+     if(user == http_username && pass == http_password) {
+        // Generate Token
+        webSessionToken = String(millis()) + String(random(1000,9999));
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", "OK");
+        response->addHeader("Set-Cookie", String(SESSION_COOKIE_NAME) + "=" + webSessionToken + "; Path=/; Max-Age=3600"); 
+        request->send(response);
+     } else {
+        request->send(401, "text/plain", "Invalid Auth");
+     }
+  });
+
+  // 3. Logout
+  server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request) {
+      webSessionToken = ""; 
+      AsyncWebServerResponse *response = request->beginResponse(302, "text/plain", "");
+      response->addHeader("Set-Cookie", String(SESSION_COOKIE_NAME) + "=0; Path=/; Max-Age=0");
+      response->addHeader("Location", "/login");
+      request->send(response);
+  });
+
+  // Route for root / web page (SECURED)
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+      if(!checkUserWebAuth(request)) { request->redirect("/login"); return; }
+      request->send(LittleFS, "/index.html", "text/html", false); 
+  });
+
+  server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) { 
+      request->send(LittleFS, "/style.css", "text/css"); 
+  });
+
+  // PROTECT VIEW ROUTES
+  auto checkAuth = [](AsyncWebServerRequest *request, const char* file) {
+      if(!checkUserWebAuth(request)) return request->send(401);
+      request->send(LittleFS, file, "text/plain", false);
+  };
+
+  server.on("/view-log", HTTP_GET, [checkAuth](AsyncWebServerRequest *r){ checkAuth(r, "/readerlogs.txt"); });
+  server.on("/view-users", HTTP_GET, [checkAuth](AsyncWebServerRequest *r){ checkAuth(r, "/users.txt"); });
+  server.on("/view-userslog", HTTP_GET, [checkAuth](AsyncWebServerRequest *r){ checkAuth(r, "/userslog.txt"); });
+  server.on("/view-systemlog", HTTP_GET, [checkAuth](AsyncWebServerRequest *r){ checkAuth(r, "/systemlog.txt"); });
+  server.on("/view-usage", HTTP_GET, [checkAuth](AsyncWebServerRequest *r){ checkAuth(r, "/usage_stats.txt"); });
+  
+  // AUTHENTICATION API (Card)
+  server.on("/api/login/wait", HTTP_POST, [](AsyncWebServerRequest *request) {
+       waitingForAdminLogin = true;
+       waitLoginTimer = millis();
+       request->send(200, "text/plain", "Waiting for Admin Card...");
+  });
+
+  server.on("/api/login/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+       // Check timeout
+       if(adminSessionUID != "" && millis() - adminSessionTimer > ADMIN_SESSION_TIMEOUT) {
+           adminSessionUID = ""; // Auto logout
+       }
+       String status = adminSessionUID != "" ? "logged_in" : (waitingForAdminLogin ? "waiting" : "logged_out");
+       String display = adminSessionUID != "" ? (adminSessionRole + " (" + adminSessionUID + ")") : "";
+       String json = "{\"status\":\"" + status + "\", \"uid\":\"" + display + "\"}";
+       request->send(200, "application/json", json);
+  });
+
+  server.on("/api/login/logout", HTTP_POST, [](AsyncWebServerRequest *request) {
+       adminSessionUID = "";
+       adminSessionRole = "";
+       request->send(200, "text/plain", "Logged Out");
+  });
+
+  // Board Info
+  server.on("/update/boardinfo", HTTP_GET, [](AsyncWebServerRequest *request) {
+       long rssi = WiFi.RSSI();
+       uint32_t freeHeap = ESP.getFreeHeap();
+       uint32_t totalHeap = ESP.getHeapSize();
+       unsigned long uptimeSec = millis() / 1000;
+       int d = uptimeSec / 86400; int h = (uptimeSec % 86400) / 3600; int m = (uptimeSec % 3600) / 60; int s = uptimeSec % 60;
+       String uptime = String(d) + "d " + String(h) + "h " + String(m) + "m " + String(s) + "s";
+       String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>Board Info</title><style>body{font-family:sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.card{background:white;padding:2rem;border-radius:15px;box-shadow:0 4px 15px rgba(0,0,0,0.1);max-width:400px;width:90%}h2{margin-top:0;color:#333;text-align:center;border-bottom:2px solid #eee;padding-bottom:10px}.item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed #eee}.label{color:#666;font-weight:500}.val{font-weight:bold;color:#1a73e8}.btn{display:block;width:100%;padding:10px;text-align:center;background:#1a73e8;color:white;text-decoration:none;border-radius:8px;margin-top:20px;transition:0.3s}.btn:hover{background:#1557b0}</style></head><body><div class='card'><h2>ℹ️ Board Info</h2><div class='item'><span class='label'>Firmware Ver</span><span class='val'>1.0.0</span></div><div class='item'><span class='label'>Free Heap</span><span class='val'>" + String(freeHeap/1024) + " KB</span></div><div class='item'><span class='label'>Total Heap</span><span class='val'>" + String(totalHeap/1024) + " KB</span></div><div class='item'><span class='label'>Uptime</span><span class='val'>" + uptime + "</span></div><div class='item'><span class='label'>WiFi Signal</span><span class='val'>" + String(rssi) + " dBm</span></div><div class='item'><span class='label'>IP Address</span><span class='val'>" + WiFi.localIP().toString() + "</span></div><a href='/' class='btn' onclick='window.close()'>Close</a></div></body></html>";
+       request->send(200, "text/html", html);
+  });
+
+  // --- API Action Handler (POST) - SECURED ---
+  server.on("/api/action", HTTP_POST, [](AsyncWebServerRequest *request) {
+      if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired"); // Web Auth First
+      
+      // Smart Card Auth Check
+      if(adminSessionUID == "") {
+          request->send(401, "text/plain", "Unauthorized: Please scan Admin Card");
+          return;
+      }
+      
+      adminSessionTimer = millis(); // Refresh Card Session
+
+      String action = request->hasParam("action", true) ? request->getParam("action", true)->value() : "";
+      String operatorStr = adminSessionRole + " (" + adminSessionUID + ")";
+
+      if(action == "clear_log") {
+          String type = request->hasParam("type", true) ? request->getParam("type", true)->value() : "";
+          
+          if(type == "reader") {
+              deleteFile(LittleFS, "/readerlogs.txt");
+              maintainLogFile(LittleFS, "/systemlog.txt", "Date,Time,Code,Msg");
+              appendFile(LittleFS, "/systemlog.txt", (String("INFO,Reader Log Cleared by ") + operatorStr).c_str());
+          }
+          else if(type == "users") {
+              deleteFile(LittleFS, "/userslog.txt");
+              maintainLogFile(LittleFS, "/systemlog.txt", "Date,Time,Code,Msg");
+              appendFile(LittleFS, "/systemlog.txt", (String("INFO,User Log Cleared by ") + operatorStr).c_str());
+          }
+          else if(type == "system") {
+              if (adminSessionUID != MAIN_KEY_UID) {
+                  request->send(403, "text/plain", "Permission Denied: Only MainKey can clear System Logs");
+                  return;
+              }
+              deleteFile(LittleFS, "/systemlog.txt");
+          }
+          else if(type == "usage") {
+              // Only allow clearing if needed, or by admin
+              deleteFile(LittleFS, "/usage_stats.txt"); 
+              maintainLogFile(LittleFS, "/systemlog.txt", "Date,Time,Code,Msg");
+              appendFile(LittleFS, "/systemlog.txt", (String("INFO,Usage Stats Cleared by ") + operatorStr).c_str());
+          }
+          request->send(200, "text/plain", "Log Cleared by " + operatorStr);
+      }
+      else if(action == "delete_user") {
+          String uid = request->hasParam("uid", true) ? request->getParam("uid", true)->value() : "";
+          if(uid != "") {
+             deleteUserByUID(LittleFS, "/users.txt", uid);
+             maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
+             appendFile(LittleFS, "/userslog.txt", (String("D") + "," + operatorStr + "," + uid).c_str());
+             request->send(200, "text/plain", "User Deleted");
+          } else {
+             request->send(400, "text/plain", "Missing UID");
+          }
+      }
+      else if(action == "save_user") {
+          String uid = request->hasParam("uid", true) ? request->getParam("uid", true)->value() : "";
+          String role = request->hasParam("role", true) ? request->getParam("role", true)->value() : "10";
+          if(uid == "") { request->send(400, "text/plain", "Missing UID"); return; }
+          if(role == "50" && adminSessionUID != MAIN_KEY_UID) {
+              request->send(403, "text/plain", "Permission Denied: Only MainKey can create Admins");
+              return;
+          }
+          String prefix = request->hasParam("prefix", true) ? request->getParam("prefix", true)->value() : "XX";
+          String fname_en = request->hasParam("fname_en", true) ? request->getParam("fname_en", true)->value() : "-";
+          String fname_th = request->hasParam("fname_th", true) ? request->getParam("fname_th", true)->value() : "-";
+          String code = request->hasParam("code", true) ? request->getParam("code", true)->value() : "-";
+          String gender = request->hasParam("gender", true) ? request->getParam("gender", true)->value() : "-";
+          String age = request->hasParam("age", true) ? request->getParam("age", true)->value() : "-";
+          String start_date = request->hasParam("start_date", true) ? request->getParam("start_date", true)->value() : "-";
+          String end_date = request->hasParam("end_date", true) ? request->getParam("end_date", true)->value() : "-";
+          
+          fname_en.replace(",", " "); fname_th.replace(",", " "); code.replace(",", " ");
+          start_date.replace("T", " "); end_date.replace("T", " ");
+
+          String finalData = uid + "," + role + "," + prefix + "," + fname_en + "," + fname_th + "," + code + "," + gender + "," + age + "," + start_date + "," + end_date;
+          String existingUser = getUserDataFromFile(LittleFS, "/users.txt", uid);
+          bool isNew = (existingUser == String(FILE_ERR_NOTFOUND) || existingUser == String(FILE_ERR_OPEN));
+          upsertUser(LittleFS, "/users.txt", uid, finalData);
+
+          String evt = isNew ? "C" : "M";
+          maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
+          appendFile(LittleFS, "/userslog.txt", (evt + "," + operatorStr + "," + uid).c_str());
+          request->send(200, "text/plain", "User Saved");
+      }
+      else {
+          request->send(400, "text/plain", "Unknown Action");
+      }
+  });
+
+  server.serveStatic("/", LittleFS, "/");
   server.begin();
 }
 
-void loop() {
-  handlePeripherals();
-	// Reset the loop if no new card present on the sensor/reader. This saves the entire process when idle.
-	if (!mfrc522.PICC_IsNewCardPresent()) {
-		return;
-	}
+void openDoor()
+{
+  digitalWrite(DOORLOCK_PIN, DOORLOCK_ON);
+  doorActive = true;
+  doorTimer = millis();
+  Serial.println("Door Unlocked");
+}
 
-	// Select one of the cards.
-	if (!mfrc522.PICC_ReadCardSerial()) {
-		return;
-	}
+int verifyUID(String uid, String &role) {
+  // 1. MAIN KEY CHECK (Always Allowed - Highest Priority)
+  if (uid == MAIN_KEY_UID) {
+      // If we are in Login Mode (Waiting for Admin Scan)
+      if(waitingForAdminLogin) {
+           adminSessionUID = uid;
+           adminSessionRole = "MainKey"; 
+           adminSessionTimer = millis();
+           waitingForAdminLogin = false;
+           // Double Beep for Login Success
+           digitalWrite(BUZZER_PIN, BUZZER_ON); delay(100); digitalWrite(BUZZER_PIN, BUZZER_OFF); delay(100);
+           digitalWrite(BUZZER_PIN, BUZZER_ON); delay(200); digitalWrite(BUZZER_PIN, BUZZER_OFF);
+      } else {
+           // Normal Access - Open Door
+            Serial.println("Access Granted (Main Key)");
+            // We still allow MainKey to control hardware directly OR let it pass?
+            // MainKey bypasses logic? 
+            // If MainKey, return OK. But logic below handles AntiPassback for everyone. 
+            // Let's assume MainKey OVERRIDES AntiPassback.
+            // So we return special code? Or just let it calculate?
+            // "MainKey" usually bypasses restrictions.
+            // Removed direct hardware control from here. handleReader will do it.
+      }
+      role = "MainKey"; // IMPORTANT: Set role so log is correct
+      return VERIFY_OK;
+  }
 
-  // Save the UID on a String variable
+  // 2. ADMIN LOGIN MODE (Specific Flow for Login Page)
+  if (waitingForAdminLogin) {
+      if(millis() - waitLoginTimer > 30000) {
+           waitingForAdminLogin = false;
+           return VERIFY_DENIED; 
+      }
+      
+      // Check if Admin (Read from File)
+      String tempRole = getRoleFromFile(LittleFS, "/users.txt", uid);
+      if (tempRole.startsWith("-") || tempRole.length() == 0) {
+          role = "Unknown";
+      } else {
+          role = tempRole;
+      }
+
+      if (role == Role_Admin) {
+           adminSessionUID = uid;
+           adminSessionRole = "Admin"; 
+           adminSessionTimer = millis();
+           waitingForAdminLogin = false;
+           digitalWrite(BUZZER_PIN, BUZZER_ON); delay(100); digitalWrite(BUZZER_PIN, BUZZER_OFF);
+           return VERIFY_OK;
+      }
+      
+      // Login Failed
+      deniedBeepState = 1; deniedBeepTimer = millis();
+      return VERIFY_DENIED;
+  }
+
+  // 3. NORMAL ACCESS FLOW (Open Door)
+  String userData = getUserDataFromFile(LittleFS, "/users.txt", uid);
+  
+  // ERROR HANDLING: If file error (-6, -1), treat as Not Found
+  if (userData.startsWith("-") || userData.length() < 2) { 
+       role = "Unknown"; 
+       deniedBeepState = 1; deniedBeepTimer = millis();
+       return VERIFY_NOTFOUND;
+  }
+
+  // Parse Role
+  int firstComma = userData.indexOf(',');
+  int secondComma = userData.indexOf(',', firstComma + 1);
+  if(firstComma > 0) {
+       if(secondComma > 0) role = userData.substring(firstComma + 1, secondComma);
+       else role = userData.substring(firstComma + 1); // Case: UID,Role (End)
+       role.trim();
+  } else {
+       role = "Unknown";
+       return VERIFY_NOTFOUND;
+  }
+
+  // 3.1 Normal Users / Admins
+  if (role == Role_Admin || role == Role_User) {
+       // Removed direct hardware control
+       return VERIFY_OK;
+  }
+  
+  // 3.2 Guest (Time Limited)
+  if (role == Role_Guest) {
+      auto getCol = [&](int index) -> String {
+          int start = 0;
+          for(int i=0; i<index; i++) {
+             start = userData.indexOf(',', start); if(start == -1) return ""; start++;
+          }
+          int end = userData.indexOf(',', start); if (end == -1) end = userData.length();
+          return userData.substring(start, end);
+      };
+
+      String startDateStr = getCol(8); startDateStr.trim();
+      String expireDateStr = getCol(9); expireDateStr.trim();
+      
+      struct tm tmstruct;
+      if(!getLocalTime(&tmstruct, 100)) return VERIFY_INVALID; // Time Sync Error
+      
+      char currentStr[20];
+      snprintf(currentStr, sizeof(currentStr), "%04d-%02d-%02d %02d:%02d", tmstruct.tm_year+1900, tmstruct.tm_mon+1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min);
+      String nowStr = String(currentStr);
+      
+      if (nowStr >= startDateStr && nowStr <= expireDateStr) {
+          // Removed direct hardware control
+          return VERIFY_OK;
+      } else {
+          deniedBeepState = 1; deniedBeepTimer = millis();
+          
+          // Auto Delete Expired Guest
+          Serial.println("Guest Expired. Deleting...");
+          deleteUserByUID(LittleFS, "/users.txt", uid);
+          
+          // Log deletion
+          maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
+          appendFile(LittleFS, "/userslog.txt", (String("D") + ",System (Expired)," + uid).c_str());
+          
+          return VERIFY_EXPIRED;
+      }
+  }
+
+  // Fallback (Invalid Role)
+  deniedBeepState = 1; deniedBeepTimer = millis();
+  return VERIFY_DENIED;
+}
+
+// Check if user is already inside (returns true if INSIDE)
+bool isUserInside(String uid) {
+   String state = getUserDataFromFile(LittleFS, "/user_state.txt", uid);
+   if(state.startsWith("-")) return false; // Not found -> default outside
+   int comma = state.indexOf(',');
+   if(comma > 0) {
+       int val = state.substring(comma+1).toInt();
+       return (val == STATE_INSIDE);
+   }
+   return false;
+}
+
+void updateUserState(String uid, int newState) {
+   upsertUser(LittleFS, "/user_state.txt", uid, uid + "," + String(newState));
+}
+
+void handleReader(int ID, MFRC522 &mfrc522)
+{
   String uidString = "";
+  String role = "";
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
+  delay(500);
   for (byte i = 0; i < mfrc522.uid.size; i++) {
-    if (mfrc522.uid.uidByte[i] < 0x10) {
-      uidString += "0"; 
-    }
+    uidString += String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
     uidString += String(mfrc522.uid.uidByte[i], HEX);
   }
-  Serial.print("Card UID: ");
+  uidString.toUpperCase();
+  Serial.print("[" + String(ID) + "] Card UID: ");
+  Serial.println(uidString);
   Serial.println(uidString);
 
-  String role = getRoleFromFile(LittleFS, "/users.txt", uidString);
-  if (role != "") {
-    Serial.println("Access Granted");
-    Serial.print("Role for UID: ");
-    Serial.print(uidString);
-    Serial.print(" is ");
-    Serial.println(role);
-    digitalWrite(BUZZER_PIN, BUZZER_ON);
-    digitalWrite(LED_STA_PIN, LED_STA_ON);
-    digitalWrite(DOORLOCK_PIN, DOORLOCK_ON);
-    doorActive = true;
-    doorTimer = millis();
-    successEffectActive = true;
-    successEffectTimer = millis();
-  } else {
-    role = "unknown";
-    Serial.println("Access Denied");
-    Serial.print("UID: ");
-    Serial.print(uidString);
-    Serial.println(" not found, set user role to unknown");
-    deniedBeepState = 1;
-    deniedBeepTimer = millis();
+  // --- ANTI-PASSBACK CHECK ---
+  // Reader 1 = IN, Reader 2 = OUT
+  bool allow = false;
+  int currentCode = VERIFY_DENIED;
 
+  // Check Permissions First
+  String tempRole = "";
+  int permCode = verifyUID(uidString, tempRole); // This only checks "CAN THIS CARD OPEN DOOR?"
+  
+  // If permission OK, check Direction Logic
+  if (permCode == VERIFY_OK) {
+      // MainKey bypasses Anti-Passback logic
+      if (uidString == MAIN_KEY_UID) {
+          allow = true;
+          role = tempRole; // Should be "MainKey"
+          currentCode = VERIFY_OK;
+      } else {
+          bool isInside = isUserInside(uidString);
+          
+          if (ID == READER_IN) { // Tapping IN
+               if (isInside) {
+                   Serial.println("Anti-Passback: Already Inside!");
+                   currentCode = VERIFY_DENIED; // Or custom code?
+                   role = tempRole; // Log the role even if denied by logic
+                   // Beep Error
+                   deniedBeepState = 1; deniedBeepTimer = millis();
+               } else {
+                   allow = true;
+                   role = tempRole;
+                   currentCode = VERIFY_OK;
+                   updateUserState(uidString, STATE_INSIDE);
+               }
+          } 
+          else if (ID == READER_OUT) { // Tapping OUT
+               if (!isInside) {
+                   Serial.println("Anti-Passback: Already Outside (or didn't tap in)!");
+                   // STRICT MODE: Deny. 
+                   // RELAXED MODE: Allow out anyway (to fix sync issues).
+                   // User asked: "Must tap out before count 1". So if already outside, maybe just open but don't count? 
+                   // request: "If tap IN, can't tap IN again until tap OUT".
+                   // So if tap OUT and already OUT, it's weird but maybe acceptable or deny?
+                   // Let's assume STRICT for "counting logic":
+                   // But usually for safety, OUT should always open? 
+                   // Re-reading user: "Check IN/OUT count -> 1 cycle". "Can't Tap IN again".
+                   // So OUT is less strict? 
+                   // Let's allow OUT always to reset state.
+                   allow = true; 
+                   role = tempRole;
+                   currentCode = VERIFY_OK;
+                   updateUserState(uidString, STATE_OUTSIDE);
+               } else {
+                   allow = true; 
+                   role = tempRole;
+                   currentCode = VERIFY_OK;
+                   updateUserState(uidString, STATE_OUTSIDE);
+                   
+                   // *** COUNT USAGE ON EXIT ONLY ***
+                   // "นับเข้าออกประตูโดยใบแตะเข้าและออกนับเป็น 1 ครั้ง" -> Count on OUT
+                   updateUsageStats(LittleFS, "/usage_stats.txt", uidString);
+               }
+          }
+      }
+  } else {
+      currentCode = permCode;
+      role = tempRole; // Role IS found (e.g. Unknown/Guest), but denied. We need to log it.
   }
-  String sdMessage = uidString + "," + role;
-  appendFile(LittleFS, "/log.txt", sdMessage.c_str());
+
+  // Override verifyUID's direct hardware control (It opens door inside verifyUID... wait)
+  // verifyUID() in previous code calls openDoor() directly! We need to Refactor verifyUID to NOT open door, only return status.
+  // OR we prevent verifyUID call? 
+  // Refactoring verifyUID is safer.
+  
+  // WAIT: My verifyUID logic above calls openDoor(). I need to change verifyUID to NOT open door.
+  // I will Modify verifyUID below.
+  
+  if (allow) {
+      Serial.println("Access Permitted (Passback OK)");
+      digitalWrite(BUZZER_PIN, BUZZER_ON); delay(200); digitalWrite(BUZZER_PIN, BUZZER_OFF);
+      openDoor();
+  } else {
+      Serial.println("Access Denied (Passback/Auth Fail)");
+  }
+
+  // Log format: ReaderID, UID, Role, Ref.Verify
+  // appendFile adds Date,Time automatically
+  maintainLogFile(LittleFS, "/readerlogs.txt", "Date,Time,ReaderID,UID,Role,Ref.Verify");
+  int sta = appendFile(LittleFS, "/readerlogs.txt", (String(ID) + "," + uidString + "," + role + "," + String(currentCode)).c_str());
+
+  if (sta != FILE_OK) {
+    Serial.printf("Failed to write to readerlogs.txt: %d\n", sta);
+  }
   digitalWrite(LED_STA_PIN, LED_STA_ON);
   delay(500);
   digitalWrite(LED_STA_PIN, LED_STA_OFF);
   mfrc522.PICC_HaltA();
-
   mfrc522.PCD_StopCrypto1();
+}
+
+void loop()
+{
+  handlePeripherals();
+  handleReader(READER_IN, mfrc522_IN);
+  handleReader(READER_OUT, mfrc522_OUT);
 }

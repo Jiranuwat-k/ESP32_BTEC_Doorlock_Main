@@ -42,23 +42,9 @@ void ESPAsyncUpdateServer::begin(char const* path ,char const* Username ,char co
     username = Username;
     password = Password;
 
-    // handler for the /update form page
-    server->on(path, HTTP_GET, [this](AsyncWebServerRequest *request){
-        if(username != "" && password != ""){
-            if( !request->authenticate(username.c_str(), password.c_str())){
-                return request->requestAuthentication();
-            }
-        }
-        
-        #ifdef ESP32
-        request->send(200, "text/html", serverIndex);
-        #else
-        request->send_P(200, "text/html", serverIndex);
-        #endif
-    });
-
     // handler for the /info API
-    server->on("/info", HTTP_GET, [this](AsyncWebServerRequest *request){
+    // Declared BEFORE the main update path to ensure it gets matched first
+    server->on("/update/info", HTTP_GET, [this](AsyncWebServerRequest *request){
     
     // Authentication Check
     if(username != "" && password != ""){
@@ -194,7 +180,7 @@ void ESPAsyncUpdateServer::begin(char const* path ,char const* Username ,char co
 });
 
     // handler for the /boardinfo HTML page
-    server->on("/boardinfo", HTTP_GET, [this](AsyncWebServerRequest *request){
+    server->on("/update/boardinfo", HTTP_GET, [this](AsyncWebServerRequest *request){
         if(username != "" && password != ""){
             if( !request->authenticate(username.c_str(), password.c_str())){
                 return request->requestAuthentication();
@@ -204,6 +190,21 @@ void ESPAsyncUpdateServer::begin(char const* path ,char const* Username ,char co
         request->send(200, "text/html", boardInfoPage);
         #else
         request->send_P(200, "text/html", boardInfoPage);
+        #endif
+    });
+
+    // handler for the /update form page (Main Path)
+    server->on(path, HTTP_GET, [this](AsyncWebServerRequest *request){
+        if(username != "" && password != ""){
+            if( !request->authenticate(username.c_str(), password.c_str())){
+                return request->requestAuthentication();
+            }
+        }
+        
+        #ifdef ESP32
+        request->send(200, "text/html", serverIndex);
+        #else
+        request->send_P(200, "text/html", serverIndex);
         #endif
     });
 

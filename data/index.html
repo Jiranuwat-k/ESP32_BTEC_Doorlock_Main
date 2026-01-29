@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>ESP32 Access Control</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* TOAST NOTIFICATION */
+      .toast-container {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 3000;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .toast {
+        background: white;
+        padding: 15px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        animation: slideIn 0.3s ease;
+        min-width: 250px;
+        border-left: 5px solid #333;
+      }
+      .toast.success {
+        border-left-color: #1a73e8;
+      }
+      .toast.error {
+        border-left-color: #e53935;
+      }
+      .toast-msg {
+        font-size: 0.95rem;
+        color: #333;
+        font-weight: 500;
+      }
+      @keyframes slideIn {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+      @keyframes fadeOut {
+        from {
+          opacity: 1;
+        }
+        to {
+          opacity: 0;
+        }
+      }
+
+      /* MODAL STYLES */
+      .modal {
+        display: none;
+        position: fixed;
+        z-index: 2000;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.6);
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(5px);
+      }
+      .modal-content {
+        background-color: var(--card-bg);
+        padding: 30px;
+        border-radius: 20px;
+        text-align: center;
+        max-width: 90%;
+        width: 380px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+        animation: popIn 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+      }
+      @keyframes popIn {
+        from {
+          transform: scale(0.8);
+          opacity: 0;
+        }
+        to {
+          transform: scale(1);
+          opacity: 1;
+        }
+      }
+      .scan-animation {
+        width: 100px;
+        height: 100px;
+        background: rgba(26, 115, 232, 0.1);
+        border-radius: 50%;
+        margin: 25px auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+      }
+      .scan-animation::after {
+        content: "";
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        border: 2px solid #1a73e8;
+        animation: ripple 1.5s infinite;
+        opacity: 0;
+      }
+      @keyframes ripple {
+        0% {
+          transform: scale(0.8);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(1.5);
+          opacity: 0;
+        }
+      }
+      .auth-status {
+        font-size: 0.85rem;
+        padding: 5px 12px;
+        background: rgba(0, 0, 0, 0.05);
+        border-radius: 20px;
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+
+      /* FAB Styles */
+      .fab-container {
+        position: fixed;
+        bottom: 30px;
+        right: 30px;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 10px;
+      }
+      .fab-main {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: var(--primary-color);
+        border: none;
+        box-shadow: 0 4px 15px rgba(26, 115, 232, 0.4);
+        color: white;
+        font-size: 24px;
+        cursor: pointer;
+        transition: transform 0.3s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .fab-main:hover {
+        transform: scale(1.1) rotate(90deg);
+      }
+      .fab-menu {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(20px);
+        transition: 0.3s;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: flex-end;
+        margin-bottom: 10px;
+      }
+      .fab-container:hover .fab-menu,
+      .fab-container.active .fab-menu {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+      .fab-item {
+        background: white;
+        color: var(--text-color);
+        padding: 10px 18px;
+        border-radius: 25px;
+        text-decoration: none;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: 0.2s;
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .fab-item:hover {
+        transform: translateX(-5px);
+        color: var(--primary-color);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toast-container" id="toast-container"></div>
+
+    <nav>
+      <div class="nav-container">
+        <a href="#" class="brand" onclick="switchPage('dashboard')"
+          ><span style="font-size: 1.5rem">🔐</span> AdminPanel</a
+        >
+        <div
+          id="auth-info"
+          style="display: none; align-items: center; gap: 10px"
+        >
+          <span id="auth-uid" class="auth-status">Guest</span>
+          <button class="btn btn-sm btn-danger" onclick="showLogoutModal()">
+            Logout
+          </button>
+        </div>
+        <ul class="nav-menu">
+          <li
+            class="nav-item active"
+            onclick="switchPage('dashboard')"
+            id="nav-dashboard"
+          >
+            <span>📄</span> Reader Log
+          </li>
+          <li
+            class="nav-item"
+            onclick="switchPage('userslog')"
+            id="nav-userslog"
+          >
+            <span>📝</span> User Log
+          </li>
+          <li class="nav-item" onclick="switchPage('manage')" id="nav-manage">
+            <span>👤</span> Members
+          </li>
+          <li class="nav-item" onclick="switchPage('add')" id="nav-add">
+            <span>➕</span> Add/Edit
+          </li>
+          <li class="nav-item" onclick="switchPage('system')" id="nav-system">
+            <span>⚙️</span> System
+          </li>
+          <li class="nav-item" onclick="switchPage('usage')" id="nav-usage">
+            <span>📈</span> Stats
+          </li>
+        </ul>
+      </div>
+    </nav>
+    <div class="container">
+      <!-- PAGES -->
+      <div id="page-dashboard" class="page active">
+        <!-- Usage Stats (New) -->
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Recent Access Logs</h2>
+            <div>
+              <button
+                class="btn btn-sm"
+                onclick="loadReaderLog()"
+                title="Refresh"
+              >
+                ↻
+              </button>
+              <button
+                class="btn btn-danger btn-sm"
+                onclick="clearLog('reader')"
+              >
+                🗑️ Clear
+              </button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table id="table-reader">
+              <thead>
+                <tr>
+                  <th>Result</th>
+                  <th>Time</th>
+                  <th>Device</th>
+                  <th>UID</th>
+                  <th>Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="5" class="empty-state">Loading...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="page-userslog" class="page">
+        <div class="card">
+          <div class="card-header">
+            <h2>History</h2>
+            <div>
+              <button
+                class="btn btn-sm"
+                onclick="loadUserLog()"
+                title="Refresh"
+              >
+                ↻
+              </button>
+              <button class="btn btn-danger btn-sm" onclick="clearLog('users')">
+                🗑️ Clear
+              </button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table id="table-userslog">
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Time</th>
+                  <th>Target UID</th>
+                  <th>By</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="4" class="empty-state">Loading...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="page-manage" class="page">
+        <div class="card">
+          <div class="card-header">
+            <h2>Members</h2>
+            <div style="display: flex; gap: 10px">
+              <button class="btn btn-sm" onclick="loadMembers()">
+                ↻ Refresh
+              </button>
+              <button
+                class="btn btn-primary btn-sm"
+                onclick="clearForm(); switchPage('add')"
+              >
+                ➕ New
+              </button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table id="table-users">
+              <thead>
+                <tr>
+                  <th>Info</th>
+                  <th>Role</th>
+                  <th>Access Period (Guest)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="4" class="empty-state">Loading...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- USAGE STATS DETAIL PAGE -->
+      <div id="page-usage" class="page">
+        <!-- Total Stats Card -->
+        <div
+          class="card"
+          style="
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+            color: white;
+          "
+        >
+          <div
+            class="card-header"
+            style="border-bottom: 1px solid rgba(255, 255, 255, 0.2)"
+          >
+            <h2 style="color: white; margin: 0">📊 Total Access Count</h2>
+            <div style="text-align: right">
+              <strong style="font-size: 2rem" id="total-access-count">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>📈 Access Count by User</h2>
+            <div>
+              <button
+                class="btn btn-sm"
+                onclick="loadUsageStats()"
+                title="Refresh"
+              >
+                ↻
+              </button>
+              <button class="btn btn-danger btn-sm" onclick="clearLog('usage')">
+                🗑️ Clear
+              </button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table id="table-usage">
+              <thead>
+                <tr>
+                  <th>UID</th>
+                  <th>Total Access</th>
+                  <th>Last Access</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="3" class="empty-state">Loading...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="page-add" class="page">
+        <div class="card">
+          <div class="card-header">
+            <h2 id="form-title">➕ Add New User</h2>
+            <button class="btn btn-sm" onclick="clearForm()">↺ Reset</button>
+          </div>
+          <form onsubmit="return validateForm()">
+            <div class="form-group">
+              <label>UID / Card ID</label>
+              <div style="display: flex; gap: 10px">
+                <input
+                  type="text"
+                  id="uid"
+                  name="uid"
+                  placeholder="Scan or Type UID"
+                  list="datalist-unknown"
+                  required
+                  autocomplete="new-password"
+                /><button
+                  type="button"
+                  class="btn btn-sm"
+                  onclick="loadUnknownUIDs()"
+                  title="Refresh Unknown List"
+                >
+                  ↻</button
+                ><datalist id="datalist-unknown"></datalist>
+              </div>
+              <div class="tip-box" style="margin-top: 5px">
+                Unknown cards from Reader Log appear in the list.
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>Role</label
+                ><select id="role" name="role" onchange="toggleGuestFields()">
+                  <option value="10">User (Standard)</option>
+                  <option value="50">Admin</option>
+                  <option value="01">Guest (Time Limited)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Title</label
+                ><select id="prefix" name="prefix">
+                  <option value="10">Mr.</option>
+                  <option value="11">Ms.</option>
+                  <option value="12">Mrs.</option>
+                  <option value="13">Miss</option>
+                  <option value="20">Dr.</option>
+                  <option value="XX">None</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>Name (English)</label
+                ><input
+                  type="text"
+                  id="fname_en"
+                  name="fname_en"
+                  placeholder="John Doe"
+                />
+              </div>
+              <div class="form-group">
+                <label>Name (Thai)</label
+                ><input
+                  type="text"
+                  id="fname_th"
+                  name="fname_th"
+                  placeholder="ชื่อ-สกุล"
+                />
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>ID Code</label
+                ><input type="text" id="code" name="code" />
+              </div>
+              <div class="form-group">
+                <label>Gender</label
+                ><select id="gender" name="gender">
+                  <option value="1">Male</option>
+                  <option value="2">Female</option>
+                  <option value="X">Other</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Age</label><input type="number" id="age" name="age" />
+              </div>
+            </div>
+            <div
+              id="guest-fields"
+              style="
+                display: none;
+                background: rgba(255, 204, 0, 0.1);
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 15px;
+                border: 1px dashed orange;
+              "
+            >
+              <label style="color: #d48806; font-weight: bold"
+                >📅 Access Period (Required for Guest)</label
+              >
+              <div class="form-grid">
+                <div class="form-group">
+                  <label>Start From</label
+                  ><input
+                    type="datetime-local"
+                    id="start_date"
+                    name="start_date"
+                  />
+                </div>
+                <div class="form-group">
+                  <label>Expire At</label
+                  ><input type="datetime-local" id="end_date" name="end_date" />
+                </div>
+              </div>
+            </div>
+            <button
+              type="submit"
+              class="btn btn-primary btn-full"
+              id="btn-save"
+            >
+              💾 Save User
+            </button>
+          </form>
+        </div>
+      </div>
+      <div id="page-system" class="page">
+        <div class="card">
+          <div class="card-header">
+            <h2>System Logs</h2>
+            <div>
+              <button class="btn btn-sm" onclick="loadSystemLog()">↻</button>
+              <button
+                class="btn btn-danger btn-sm"
+                onclick="clearLog('system')"
+              >
+                🗑️ Clear
+              </button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table id="table-system">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Code</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="3" class="empty-state">Loading...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FLOATING ACTION BUTTON -->
+    <div class="fab-container" id="fab">
+      <div class="fab-menu">
+        <a href="/update" class="fab-item" target="_blank">☁️ Update FW</a>
+        <a href="/update/boardinfo" class="fab-item" target="_blank"
+          >ℹ️ Board Info</a
+        >
+      </div>
+      <button
+        class="fab-main"
+        onclick="document.getElementById('fab').classList.toggle('active')"
+      >
+        ⚡
+      </button>
+    </div>
+
+    <!-- AUTH MODAL -->
+    <div id="auth-modal" class="modal">
+      <div class="modal-content">
+        <h2 style="margin-bottom: 10px">Security Check</h2>
+        <p style="color: var(--text-secondary)">
+          This action requires authorization.<br />Please scan <b>Admin</b> or
+          <b>MainKey</b>.
+        </p>
+        <div class="scan-animation">
+          <span style="font-size: 2rem">💳</span>
+        </div>
+        <p
+          id="scan-status"
+          style="font-weight: bold; color: var(--primary-color)"
+        >
+          Waiting...
+        </p>
+        <button
+          class="btn btn-sm"
+          onclick="cancelLogin()"
+          style="margin-top: 20px; background: #eee; color: #333"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+
+    <!-- LOGOUT MODAL -->
+    <div id="logout-modal" class="modal">
+      <div class="modal-content">
+        <h3 style="margin-top: 0">🚪 Logout Options</h3>
+        <p style="color: var(--text-secondary)">Select session to terminate:</p>
+        <div
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 20px;
+          "
+        >
+          <button
+            class="btn"
+            style="background: #ff9800; color: white"
+            onclick="logoutCard()"
+            id="btn-logout-card"
+          >
+            💳 Sign out Card (MainKey/Admin)
+          </button>
+          <button class="btn btn-danger" onclick="logoutWeb()">
+            🌐 Sign out Web System
+          </button>
+          <button
+            class="btn"
+            style="background: #eee; color: #333"
+            onclick="closeLogoutModal()"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // TOAST FUNCTION
+      function showToast(msg, type = "success") {
+        const container = document.getElementById("toast-container");
+        const div = document.createElement("div");
+        div.className = `toast ${type}`;
+        div.innerHTML = `<span style="font-size:1.2rem">${
+          type === "success" ? "✅" : "❌"
+        }</span><div class="toast-msg">${msg}</div>`;
+        container.appendChild(div);
+        setTimeout(() => {
+          div.style.animation = "fadeOut 0.3s forwards";
+          setTimeout(() => div.remove(), 300);
+        }, 3000);
+      }
+
+      // HELPER: Format UID for display (e.g. AABBCC -> AA BB CC)
+      function formatUID(uid) {
+        if (!uid || uid.length < 2) return uid;
+        return uid.toUpperCase().replace(/(.{2})(?=.)/g, "$1 ");
+      }
+
+      let pendingAction = null;
+      let pollInterval = null;
+      async function postAction(action, params = {}) {
+        const formData = new FormData();
+        formData.append("action", action);
+        for (const k in params) formData.append(k, params[k]);
+        try {
+          const res = await fetch("/api/action", {
+            method: "POST",
+            body: formData,
+          });
+          if (res.status === 401) {
+            const txt = await res.text();
+            if (txt.includes("Session"))
+              window.location.reload(); // Web session expired
+            else {
+              pendingAction = { action, params };
+              startLoginFlow();
+            } // Card auth needed
+            return;
+          }
+          if (res.ok) {
+            const msg = await res.text();
+            showToast(msg, "success"); // Use Toast
+            if (action === "save_user") {
+              clearForm();
+              switchPage("manage");
+            } else if (action === "delete_user") loadMembers();
+            else {
+              const p = document
+                .querySelector(".page.active")
+                .id.replace("page-", "");
+              switchPage(p);
+            }
+            checkLoginStatus();
+          } else {
+            showToast(await res.text(), "error");
+          } // Use Toast
+        } catch (e) {
+          console.error(e);
+          showToast("Network Error", "error");
+        }
+      }
+      async function startLoginFlow() {
+        document.getElementById("auth-modal").style.display = "flex";
+        document.getElementById("scan-status").innerText =
+          "Starting reader mode...";
+        await fetch("/api/login/wait", { method: "POST" });
+        document.getElementById("scan-status").innerText =
+          "Please tap card now...";
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = setInterval(async () => {
+          try {
+            const res = await fetch("/api/login/status");
+            const data = await res.json();
+            if (data.status === "logged_in") {
+              clearInterval(pollInterval);
+              document.getElementById("auth-modal").style.display = "none";
+              updateAuthUI(data.uid);
+              if (pendingAction) {
+                postAction(pendingAction.action, pendingAction.params);
+                pendingAction = null;
+              }
+            }
+          } catch (e) {}
+        }, 1000);
+      }
+      function cancelLogin() {
+        document.getElementById("auth-modal").style.display = "none";
+        if (pollInterval) clearInterval(pollInterval);
+        pendingAction = null;
+      }
+
+      // LOGOUT LOGIC
+      function showLogoutModal() {
+        document.getElementById("logout-modal").style.display = "flex";
+        // Check if card is logged in (based on UI text)
+        const statusText = document.getElementById("auth-uid").innerText;
+        const btnCard = document.getElementById("btn-logout-card");
+        if (statusText.includes("Guest") || statusText === "") {
+          btnCard.style.opacity = "0.5";
+          btnCard.style.pointerEvents = "none";
+          btnCard.innerText = "💳 Card not logged in";
+        } else {
+          btnCard.style.opacity = "1";
+          btnCard.style.pointerEvents = "auto";
+          btnCard.innerText =
+            "💳 Sign out Card (" + statusText.replace("👤 ", "") + ")";
+        }
+      }
+      function closeLogoutModal() {
+        document.getElementById("logout-modal").style.display = "none";
+      }
+      async function logoutCard() {
+        try {
+          await fetch("/api/login/logout", { method: "POST" });
+          showToast("Card Session Logged Out");
+          closeLogoutModal();
+          checkLoginStatus();
+        } catch (e) {
+          showToast("Error logging out card", "error");
+        }
+      }
+      function logoutWeb() {
+        window.location.href = "/logout";
+      }
+
+      async function checkLoginStatus() {
+        try {
+          const res = await fetch("/api/login/status");
+          const data = await res.json();
+          updateAuthUI(data.uid);
+        } catch (e) {}
+      }
+      function updateAuthUI(uid) {
+        const div = document.getElementById("auth-info");
+        const span = document.getElementById("auth-uid");
+
+        // Always show the logout container to allow Web Logout
+        div.style.display = "flex";
+
+        if (uid && typeof uid === "string" && uid !== "") {
+          span.innerText = "👤 " + formatUID(uid);
+          span.style.background = "#e3f2fd";
+          span.style.color = "#1565c0";
+          span.style.display = "inline-block";
+        } else {
+          // Card not logged in
+          span.innerText = "Guest";
+          span.style.background = "transparent";
+          span.style.color = "#666";
+          span.style.display = "none"; // Hide the UID badge but keep button
+        }
+      }
+      function switchPage(pageId) {
+        document
+          .querySelectorAll(".nav-item")
+          .forEach((el) => el.classList.remove("active"));
+        const navEl = document.getElementById("nav-" + pageId);
+        if (navEl) navEl.classList.add("active");
+        document
+          .querySelectorAll(".page")
+          .forEach((el) => el.classList.remove("active"));
+        document.getElementById("page-" + pageId).classList.add("active");
+        if (pageId === "dashboard") loadReaderLog();
+        if (pageId === "userslog") loadUserLog();
+        if (pageId === "usage") loadUsageStats();
+        if (pageId === "manage") loadMembers();
+        if (pageId === "system") loadSystemLog();
+        if (pageId === "add") loadUnknownUIDs();
+      }
+      const roleMap = {
+        10: "User",
+        50: "Admin",
+        "01": "Guest",
+        99: "MainKey",
+        "00": "Unknown",
+      };
+      const verifyMap = {
+        1: "OK",
+        2: "DENIED",
+        3: "NOTFOUND",
+        4: "EXPIRED",
+        5: "INVALID",
+      };
+      const badgeClass = {
+        1: "bg-success",
+        2: "bg-danger",
+        3: "bg-warning",
+        4: "bg-danger",
+        5: "bg-dark",
+      };
+      const readerMap = { 1: "IN", 2: "OUT" };
+      async function loadReaderLog() {
+        try {
+          const res = await fetch("view-log?r=" + Math.random());
+          const text = await res.text();
+          const rows = text.trim().split("\n").slice(1).reverse();
+          let html = "";
+          rows.forEach((r) => {
+            const c = r.split(",");
+            if (c.length < 6) return;
+            const status = verifyMap[c[5]] || "Unknown";
+            const badge = badgeClass[c[5]] || "bg-dark";
+            const reader = readerMap[c[2]] || c[2];
+            html += `<tr><td><span class="badge ${badge}">${status}</span></td><td>${
+              c[0]
+            }<br><small style="color:#888">${
+              c[1]
+            }</small></td><td><b>${reader}</b></td><td><code style="white-space:nowrap">${formatUID(
+              c[3]
+            )}</code></td><td>${roleMap[c[4]] || c[4]}</td></tr>`;
+          });
+          document.querySelector("#table-reader tbody").innerHTML =
+            html ||
+            '<tr><td colspan="5" class="empty-state">No logs found</td></tr>';
+        } catch (e) {}
+      }
+      async function loadUserLog() {
+        const map = {
+          C: '<span class="badge bg-success">Created</span>',
+          M: '<span class="badge bg-warning">Modified</span>',
+          D: '<span class="badge bg-danger">Deleted</span>',
+        };
+        try {
+          const res = await fetch("view-userslog?r=" + Math.random());
+          const text = await res.text();
+          const rows = text.trim().split("\n").slice(1).reverse();
+          let html = "";
+          rows.forEach((r) => {
+            const c = r.split(",");
+            if (c.length < 5) return;
+            html += `<tr><td>${map[c[2]] || c[2]}</td><td>${c[0]} <small>${
+              c[1]
+            }</small></td><td><code style="white-space:nowrap">${
+              formatUID(c[4]) || "-"
+            }</code></td><td>${c[3] || "System"}</td></tr>`;
+          });
+          document.querySelector("#table-userslog tbody").innerHTML = html;
+        } catch (e) {}
+      }
+      async function loadSystemLog() {
+        try {
+          const res = await fetch("view-systemlog?r=" + Math.random());
+          const text = await res.text();
+          const rows = text.trim().split("\n").slice(1).reverse();
+          let html = "";
+          rows.forEach((r) => {
+            const c = r.split(",");
+            if (c.length < 3) return;
+            html += `<tr><td>${c[0]} ${c[1]}</td><td><b>${c[2]}</b></td><td>${
+              c[3] || ""
+            }</td></tr>`;
+          });
+          document.querySelector("#table-system tbody").innerHTML = html;
+        } catch (e) {}
+      }
+      async function loadUsageStats() {
+        try {
+          // 1. Get Usage Data
+          const res = await fetch("view-usage?r=" + Math.random());
+          const text = await res.text();
+          const rows = text.trim().split("\n").slice(1);
+
+          // 2. Get User Map for Names
+          const uRes = await fetch("view-users?r=" + Math.random());
+          const uText = await uRes.text();
+          const nameMap = {};
+          uText
+            .split("\n")
+            .slice(1)
+            .forEach((r) => {
+              const c = r.split(",");
+              if (c.length > 3) nameMap[c[0]] = c[3] || c[4];
+            });
+
+          let html = "";
+          let totalStats = 0;
+
+          rows.forEach((r) => {
+            const c = r.split(",");
+            if (c.length < 3) return;
+            const count = parseInt(c[1]) || 0;
+            totalStats += count;
+
+            const name = nameMap[c[0]] ? " (" + nameMap[c[0]] + ")" : "";
+
+            html += `<tr>
+                    <td><code>${formatUID(c[0])}</code><b>${name}</b></td>
+                    <td><span class="badge bg-success">${count}</span></td>
+                    <td><small>${c[2]}</small></td>
+                 </tr>`;
+          });
+
+          document.querySelector("#table-usage tbody").innerHTML = html;
+
+          // Update Total Dashboard Counter if exists
+          const totalEl = document.getElementById("total-access-count");
+          if (totalEl) totalEl.innerText = totalStats;
+        } catch (e) {}
+      }
+      async function loadMembers() {
+        try {
+          const res = await fetch("view-users?r=" + Math.random());
+          const text = await res.text();
+          const rows = text.trim().split("\n").slice(1);
+          let html = "";
+          rows.forEach((r, idx) => {
+            const c = r.split(",");
+            if (c.length < 2) return;
+            const inputs = JSON.stringify(c).replace(/'/g, "&apos;");
+            const prefix =
+              c[2] === "XX"
+                ? ""
+                : c[2] === "10"
+                ? "Mr."
+                : c[2] === "11"
+                ? "Ms."
+                : "";
+            const name = `${prefix} ${c[3] || c[4] || "S"}`;
+            let guestInfo = '<span class="badge bg-success">Permanent</span>';
+            if (c[1] === "01") {
+              const now = new Date();
+              const endDate = c[9] ? new Date(c[9]) : null;
+              const isExpired = endDate && now > endDate;
+
+              if (isExpired) {
+                guestInfo =
+                  '<span class="badge bg-danger">EXPIRED</span><br><small> Ended: ' +
+                  (c[9] ? c[9].replace("T", " ") : "-") +
+                  "</small>";
+              } else {
+                guestInfo = `<small>Start: ${
+                  c[8] ? c[8].replace("T", " ") : "-"
+                }<br><span style="color:red">End: ${
+                  c[9] ? c[9].replace("T", " ") : "-"
+                }</span></small>`;
+              }
+            }
+            html += `<tr><td><b>${name}</b><br><small style="font-family:monospace;color:#555">${formatUID(
+              c[0]
+            )}</small></td><td>${
+              roleMap[c[1]] || c[1]
+            }</td><td>${guestInfo}</td><td><button class="btn btn-sm btn-primary" onclick='editUser(${inputs})'>✏️</button> <button class="btn btn-sm btn-danger" onclick="deleteUser('${
+              c[0]
+            }')">🗑️</button></td></tr>`;
+          });
+          document.querySelector("#table-users tbody").innerHTML =
+            html ||
+            '<tr><td colspan="4" class="empty-state">No members found</td></tr>';
+        } catch (e) {}
+      }
+      async function loadUnknownUIDs() {
+        try {
+          const uRes = await fetch("view-users?r=" + Math.random());
+          const uText = await uRes.text();
+          const regSet = new Set();
+          uText
+            .split("\n")
+            .slice(1)
+            .forEach((r) => regSet.add(r.split(",")[0]));
+          const lRes = await fetch("view-log?r=" + Math.random());
+          const lText = await lRes.text();
+          const unknownSet = new Set();
+          lText.split("\n").forEach((r) => {
+            const c = r.split(",");
+            if (c.length >= 6 && c[5] === "3" && !regSet.has(c[3]))
+              unknownSet.add(c[3]);
+          });
+          const list = document.getElementById("datalist-unknown");
+          list.innerHTML = "";
+          Array.from(unknownSet)
+            .reverse()
+            .forEach((uid) => {
+              const opt = document.createElement("option");
+              opt.value = uid;
+              opt.textContent = "New Scan";
+              list.appendChild(opt);
+            });
+        } catch (e) {}
+      }
+      function toggleGuestFields() {
+        const role = document.getElementById("role").value;
+        const div = document.getElementById("guest-fields");
+        const start = document.getElementById("start_date");
+        const end = document.getElementById("end_date");
+        if (role === "01") {
+          div.style.display = "block";
+          start.required = true;
+          end.required = true;
+        } else {
+          div.style.display = "none";
+          start.required = false;
+          end.required = false;
+        }
+      }
+      function editUser(data) {
+        document.getElementById("uid").value = data[0];
+        document.getElementById("uid").readOnly = true;
+        document.getElementById("role").value = data[1];
+        document.getElementById("prefix").value = data[2] || "XX";
+        document.getElementById("fname_en").value = data[3] || "";
+        document.getElementById("fname_th").value = data[4] || "";
+        document.getElementById("code").value = data[5] || "";
+        document.getElementById("gender").value = data[6] || "X";
+        document.getElementById("age").value = data[7] || "";
+        if (data[8]) document.getElementById("start_date").value = data[8];
+        if (data[9]) document.getElementById("end_date").value = data[9];
+        toggleGuestFields();
+        switchPage("add");
+        document.getElementById("form-title").innerText = "✏️ Edit User";
+        document.getElementById("btn-save").innerHTML = "💾 Update Changes";
+      }
+      function clearForm() {
+        document.querySelector("form").reset();
+        document.getElementById("uid").value = "";
+        document.getElementById("uid").readOnly = false;
+        document.getElementById("form-title").innerText = "➕ Add New User";
+        document.getElementById("btn-save").innerHTML = "💾 Save User";
+        toggleGuestFields();
+      }
+
+      // Use Toast Confirm for dangerous actions? No, standard confirm is safer for delete. But let's keep it standard for now.
+      function clearLog(type) {
+        if (confirm("Are you sure you want to clear " + type + " logs?"))
+          postAction("clear_log", { type: type });
+      }
+      function deleteUser(uid) {
+        if (confirm("Delete User " + uid + "?"))
+          postAction("delete_user", { uid: uid });
+      }
+      function validateForm() {
+        const form = document.querySelector("form");
+        const data = {
+          uid: document.getElementById("uid").value,
+          role: document.getElementById("role").value,
+          prefix: document.getElementById("prefix").value,
+          fname_en: document.getElementById("fname_en").value,
+          fname_th: document.getElementById("fname_th").value,
+          code: document.getElementById("code").value,
+          gender: document.getElementById("gender").value,
+          age: document.getElementById("age").value,
+          start_date: document.getElementById("start_date").value,
+          end_date: document.getElementById("end_date").value,
+        };
+        postAction("save_user", data);
+        return false;
+      }
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("uid")) {
+        switchPage("add");
+        document.getElementById("uid").value = params.get("uid");
+      } else {
+        switchPage("dashboard");
+        checkLoginStatus();
+      }
+    </script>
+  </body>
+</html>

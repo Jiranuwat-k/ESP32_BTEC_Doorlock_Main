@@ -6,9 +6,10 @@
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 NfcAdapter nfc = NfcAdapter(&mfrc522);
-// ส่วนประกาศ Function
+
 void dumpNtag215Data();
 void checkAuthenticity();
+
 void setup() {
     Serial.begin(115200);
     while (!Serial);

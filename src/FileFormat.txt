@@ -1,0 +1,17 @@
+Ex.
+0 -> Null
+Prefix [10:Mr, 11:Ms, 12:Mrs, 13:Miss, 20:Dr, 21:Prof, XX:Etc]
+Gender [1:Male, 2:Female, X:Etc]
+Event [C,M,D]
+Verify [1:OK, 2:DENIED, 3:NOTFOUND, 4:EXPIRED, 5:NOTVALID, X:Etc]
+Role[]
+---------------------------------------------------------------------------------------------------------------
+users.txt
+UID[0:S14], Role[1:I2], Prefix[2:I2] FullNameEN[2:S64], FullNameTH[3:S256] Code[4:S13], Gender[5:I1], Age[6:I3], ExpireDate[7:S10]
+readerlogs.txt
+Date[0], Time[1], ReaderID[2], UID[3:S14], Role[4:I2], Ref.Verify[5:I1]
+userslog.txt
+Date[0], Time[1], Event[2:S1], UID[3], ModUID[4:S14]   
+systemlog.txt
+Date[0], Time[1], Code[2], Msg[3]
+

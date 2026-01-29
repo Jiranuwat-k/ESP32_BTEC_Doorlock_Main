@@ -185,7 +185,7 @@ static const char serverIndex[] PROGMEM = R"(
 
     </div>
     
-    <div class="footer-info" onclick="window.location.href='/boardinfo'" style="margin-top: 20px; font-size: 12px; color: #888; display: flex; justify-content: center; align-items: center; gap: 8px; cursor: pointer;">
+    <div class="footer-info" onclick="window.location.href='/update/boardinfo'" style="margin-top: 20px; font-size: 12px; color: #888; display: flex; justify-content: center; align-items: center; gap: 8px; cursor: pointer;">
         <span class="info-pill chip-pill" id="footer_chipid">-</span>
         <span class="info-pill board-pill" id="footer_board">-</span>
     </div>
@@ -205,7 +205,7 @@ static const char serverIndex[] PROGMEM = R"(
         }
 
         // Fetch board info
-        fetch('/info')
+        fetch('/update/info')
             .then(response => response.json())
             .then(data => {
                 document.getElementById('chip_size').innerText = formatBytes(data.chip_size);
