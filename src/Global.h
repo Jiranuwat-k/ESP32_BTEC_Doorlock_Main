@@ -17,6 +17,7 @@
     #include "Config.h"
 
     void handleReader(int ID, MFRC522 &mfrc522);
-    int verifyUID(String uid, String &role);
-
+    int verifyUID(String uid, String &role, bool isExit = false);
+    void updateUserState(String uid, int newState);
+    bool isUserInside(String uid);
 #endif

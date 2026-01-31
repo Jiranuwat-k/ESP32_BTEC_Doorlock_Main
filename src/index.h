@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -7,18 +7,127 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <title>ESP32 Access Control</title>
-    <link rel="stylesheet" href="style.css" />
+    <!-- <link rel="stylesheet" href="style.css" /> -->
     <style>
-      /* TOAST NOTIFICATION */
+      :root {
+          --bg-color: #f0f2f5;
+          --card-bg: #ffffff;
+          --text-color: #1c1e21;
+          --text-secondary: #65676b;
+          --primary-color: #1877f2;
+          --primary-hover: #166fe5;
+          --danger-color: #ff3b30;
+          --success-color: #34c759;
+          --warning-color: #ffcc00;
+          --border-radius: 12px;
+          --shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+          --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+          --nav-height: 60px;
+      }
+      @media (prefers-color-scheme: dark) {
+          :root {
+              --bg-color: #18191a;
+              --card-bg: #242526;
+              --text-color: #e4e6eb;
+              --text-secondary: #b0b3b8;
+              --primary-color: #2d88ff;
+              --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+          }
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: var(--font-family); background-color: var(--bg-color); color: var(--text-color); padding-bottom: 80px; }
+      nav { background: var(--card-bg); box-shadow: var(--shadow); height: var(--nav-height); position: sticky; top: 0; z-index: 1000; display: flex; align-items: center; padding: 0 1rem; }
+      .nav-container { max-width: 1200px; width: 100%; margin: 0 auto; display: flex; align-items: center; gap: 20px; }
+      .brand { font-size: 1.25rem; font-weight: 700; color: var(--primary-color); text-decoration: none; display: flex; align-items: center; gap: 8px; }
+      .nav-menu { display: flex; gap: 5px; list-style: none; margin-left: auto; }
+      .nav-item { cursor: pointer; padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; font-size: 0.95rem; color: var(--text-secondary); transition: all 0.2s; text-decoration: none; display: flex; align-items: center; gap: 6px; }
+      .nav-item:hover { background: rgba(0, 0, 0, 0.05); color: var(--text-color); }
+      .nav-item.active { color: var(--primary-color); background: rgba(24, 119, 242, 0.1); }
+      .mobile-menu-btn { display: none; background: none; border: none; font-size: 1.5rem; color: var(--text-color); cursor: pointer; }
+      @media (max-width: 768px) {
+          .nav-menu { position: fixed; bottom: 0; left: 0; right: 0; background: var(--card-bg); justify-content: space-around; padding: 10px 0; box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.1); z-index: 999; }
+          .nav-item { flex-direction: column; font-size: 0.75rem; gap: 2px; padding: 5px; flex: 1; text-align: center; border-radius: 0; }
+          .nav-item span { display: block; font-size: 1.2rem; margin-bottom: 2px; }
+          body { padding-bottom: 80px; }
+          .profile-menu { margin-left: auto; }
+          .profile-dropdown { position: fixed; top: 60px; right: 10px; width: calc(100% - 20px); max-width: 300px; }
+      }
+      .page { display: none; animation: fadeIn 0.3s ease; }
+      .page.active { display: block; }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+      .container { max-width: 1200px; margin: 20px auto; padding: 0 15px; }
+      .card { background: var(--card-bg); border-radius: var(--border-radius); padding: 20px; box-shadow: var(--shadow); margin-bottom: 20px; }
+      .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+      h2 { font-size: 1.4rem; color: var(--text-color); }
+      .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+      th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid rgba(0, 0, 0, 0.05); }
+      th { font-weight: 600; color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; }
+      tr:last-child td { border-bottom: none; }
+      .badge { padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; font-weight: 600; }
+      .bg-success { background: rgba(52, 199, 89, 0.15); color: #34c759; }
+      .bg-danger { background: rgba(255, 59, 48, 0.15); color: #ff3b30; }
+      .bg-warning { background: rgba(255, 204, 0, 0.15); color: #d48806; }
+      .bg-info { background: rgba(24, 119, 242, 0.15); color: #1877f2; }
+      .bg-dark { background: rgba(0, 0, 0, 0.1); color: var(--text-color); }
+      .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+      .form-group { margin-bottom: 15px; }
+      label { display: block; margin-bottom: 6px; font-size: 0.9rem; font-weight: 500; color: var(--text-secondary); }
+      input { width: 100%; padding: 10px; border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; background: var(--bg-color); color: var(--text-color); font-size: 0.95rem; outline: none; transition: 0.2s; }
+      select { width: 100%; padding: 10px; border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; background: var(--bg-color); color: var(--text-color); font-size: 0.95rem; outline: none; transition: 0.2s;
+        appearance: none; -webkit-appearance: none;
+        background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2365676b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+        background-repeat: no-repeat; background-position: right 1rem center; background-size: 1em; padding-right: 2.5rem;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      input:focus, select:focus { border-color: var(--primary-color); background: var(--card-bg); box-shadow: 0 0 0 2px rgba(24, 119, 242, 0.2); }
+      @media (prefers-color-scheme: dark) { select { background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b0b3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); } }
+      input[type="datetime-local"] { font-family: inherit; color: var(--text-color); }
+      ::-webkit-calendar-picker-indicator { filter: invert(0.5); cursor: pointer; }
+      .btn { display: inline-flex; align-items: center; gap: 6px; justify-content: center; padding: 8px 16px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; background: var(--bg-color); color: var(--text-color); text-decoration: none; transition: 0.2s; font-size: 0.9rem; }
+      .btn-primary { background: var(--primary-color); color: white; }
+      .btn-primary:hover { background: var(--primary-hover); }
+      .btn-danger { background: rgba(255, 59, 48, 0.1); color: var(--danger-color); }
+      .btn-danger:hover { background: rgba(255, 59, 48, 0.2); }
+      .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+      .btn-full { width: 100%; padding: 12px; margin-top: 10px; }
+      .empty-state { text-align: center; padding: 40px 0; color: var(--text-secondary); }
+      .empty-icon { font-size: 3rem; margin-bottom: 10px; display: block; opacity: 0.5; }
+      .tip-box { background: rgba(24, 119, 242, 0.05); border: 1px dashed var(--primary-color); border-radius: 8px; padding: 10px; font-size: 0.85rem; color: var(--text-secondary); }
+      .empty-icon { font-size: 3rem; margin-bottom: 10px; display: block; opacity: 0.5; }
+      .tip-box { background: rgba(24, 119, 242, 0.05); border: 1px dashed var(--primary-color); border-radius: 8px; padding: 10px; font-size: 0.85rem; color: var(--text-secondary); }
+      
+      /* Google-like Profile */
+      .profile-menu { position: relative; }
+      .profile-btn { width: 40px; height: 40px; border-radius: 50%; background: var(--primary-color); color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.2rem; cursor: pointer; border: 2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.2); user-select: none; }
+      .profile-btn:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.3); }
+      .profile-dropdown { position: absolute; top: 50px; right: 0; background: var(--card-bg); border-radius: 16px; box-shadow: 0 5px 20px rgba(0,0,0,0.2); width: 300px; padding: 20px; display: none; flex-direction: column; align-items: center; z-index: 2000; animation: fadePop 0.2s ease; border: 1px solid rgba(0,0,0,0.1); }
+      .profile-dropdown.show { display: flex; }
+      .profile-avatar-lg { width: 80px; height: 80px; border-radius: 50%; background: var(--primary-color); color: white; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; font-weight: bold; margin-bottom: 10px; }
+      .profile-name { font-size: 1.1rem; font-weight: 600; color: var(--text-color); margin-bottom: 5px; }
+      .profile-uid { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 20px; font-family: monospace; background: rgba(0,0,0,0.05); padding: 4px 8px; border-radius: 12px; }
+      .profile-actions { width: 100%; border-top: 1px solid rgba(0,0,0,0.1); padding-top: 15px; display: flex; justify-content: center; gap: 10px; }
+      .btn-logout-google { border: 1px solid #dadce0; background: transparent; color: #3c4043; padding: 10px 24px; border-radius: 4px; font-weight: 500; cursor: pointer; transition: 0.2s; }
+      .btn-logout-google:hover { background: rgba(0,0,0,0.05); color: var(--text-color); }
+      @keyframes fadePop { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+
+      /* TOAST NOTIFICATION COPY FROM ORIGINAL */
       .toast-container {
         position: fixed;
-        top: 20px;
-        right: 20px;
+        bottom: 20px;
+        left: 20px;
         z-index: 3000;
         display: flex;
         flex-direction: column;
         gap: 10px;
       }
+      /* On mobile, raise it so it doesn't cover the bottom nav */
+      @media (max-width: 768px) {
+        .toast-container {
+             bottom: 90px;
+             left: 10px;
+        }
+      }
+
       .toast {
         background: white;
         padding: 15px 20px;
@@ -44,7 +153,7 @@
       }
       @keyframes slideIn {
         from {
-          transform: translateX(100%);
+          transform: translateX(-100%);
           opacity: 0;
         }
         to {
@@ -65,7 +174,7 @@
       .modal {
         display: none;
         position: fixed;
-        z-index: 2000;
+        z-index: 3000;
         left: 0;
         top: 0;
         width: 100%;
@@ -140,11 +249,17 @@
         position: fixed;
         bottom: 30px;
         right: 30px;
-        z-index: 100;
+        z-index: 2200;
         display: flex;
         flex-direction: column;
         align-items: flex-end;
         gap: 10px;
+      }
+      @media (max-width: 768px) {
+        .fab-container {
+           bottom: 100px;
+           right: 20px;
+        }
       }
       .fab-main {
         width: 56px;
@@ -156,13 +271,18 @@
         color: white;
         font-size: 24px;
         cursor: pointer;
-        transition: transform 0.3s;
+        transition: transform 0.3s, background 0.3s;
         display: flex;
         align-items: center;
         justify-content: center;
       }
       .fab-main:hover {
-        transform: scale(1.1) rotate(90deg);
+        transform: scale(1.1);
+      }
+      .fab-container.active .fab-main {
+        transform: rotate(45deg);
+        background: var(--danger-color);
+        box-shadow: 0 4px 15px rgba(255, 59, 48, 0.4);
       }
       .fab-menu {
         opacity: 0;
@@ -210,15 +330,6 @@
         <a href="#" class="brand" onclick="switchPage('dashboard')"
           ><span style="font-size: 1.5rem">🔐</span> AdminPanel</a
         >
-        <div
-          id="auth-info"
-          style="display: none; align-items: center; gap: 10px"
-        >
-          <span id="auth-uid" class="auth-status">Guest</span>
-          <button class="btn btn-sm btn-danger" onclick="showLogoutModal()">
-            Logout
-          </button>
-        </div>
         <ul class="nav-menu">
           <li
             class="nav-item active"
@@ -247,6 +358,20 @@
             <span>📈</span> Stats
           </li>
         </ul>
+        <div class="profile-menu" id="auth-info" style="display:none">
+             <div class="profile-btn" onclick="toggleProfileDropdown()">
+                <span id="profile-initials">G</span>
+             </div>
+             <div class="profile-dropdown" id="profile-dropdown">
+                 <div class="profile-avatar-lg" id="profile-avatar-lg">G</div>
+                 <div class="profile-name" id="profile-name">Guest</div>
+                 <div class="profile-uid" id="profile-uid">Not Logged In</div>
+                 <div class="profile-actions">
+                    <button id="btn-login-card" onclick="startLoginFlow()" class="btn-logout-google">Login Card</button>
+                    <button onclick="showLogoutModal()" class="btn-logout-google">Sign out</button>
+                 </div>
+             </div>
+        </div>
       </div>
     </nav>
     <div class="container">
@@ -439,7 +564,7 @@
                   placeholder="Scan or Type UID"
                   list="datalist-unknown"
                   required
-                  autocomplete="new-password"
+                  autocomplete="off"
                 /><button
                   type="button"
                   class="btn btn-sm"
@@ -464,12 +589,15 @@
               </div>
               <div class="form-group">
                 <label>Title</label
-                ><select id="prefix" name="prefix">
+                ><select id="prefix" name="prefix" required>
                   <option value="10">Mr.</option>
                   <option value="11">Ms.</option>
                   <option value="12">Mrs.</option>
                   <option value="13">Miss</option>
                   <option value="20">Dr.</option>
+                  <option value="30">Teacher</option>
+                  <option value="40">Student</option>
+                  <option value="41">Uni. Student</option>
                   <option value="XX">None</option>
                 </select>
               </div>
@@ -482,6 +610,7 @@
                   id="fname_en"
                   name="fname_en"
                   placeholder="John Doe"
+                  required
                 />
               </div>
               <div class="form-group">
@@ -491,17 +620,18 @@
                   id="fname_th"
                   name="fname_th"
                   placeholder="ชื่อ-สกุล"
+                  required
                 />
               </div>
             </div>
             <div class="form-grid">
               <div class="form-group">
                 <label>ID Code</label
-                ><input type="text" id="code" name="code" />
+                ><input type="text" id="code" name="code" required />
               </div>
               <div class="form-group">
                 <label>Gender</label
-                ><select id="gender" name="gender">
+                ><select id="gender" name="gender" required>
                   <option value="1">Male</option>
                   <option value="2">Female</option>
                   <option value="X">Other</option>
@@ -587,10 +717,11 @@
     <!-- FLOATING ACTION BUTTON -->
     <div class="fab-container" id="fab">
       <div class="fab-menu">
-        <a href="/update" class="fab-item" target="_blank">☁️ Update FW</a>
-        <a href="/update/boardinfo" class="fab-item" target="_blank"
-          >ℹ️ Board Info</a
-        >
+        <!-- can use target="_blank" -->
+        <a href="/update" class="fab-item">☁️ Update FW</a>
+        <a href="/update/boardinfo" class="fab-item">ℹ️ Board Info</a>
+        <a href="#" class="fab-item" onclick="exportCurrentTable('csv'); return false;">💾 Export CSV</a>
+        <a href="#" class="fab-item" onclick="exportCurrentTable('xls'); return false;">📊 Export Excel</a>
       </div>
       <button
         class="fab-main"
@@ -662,6 +793,18 @@
       </div>
     </div>
 
+    <!-- GENERIC CONFIRM MODAL -->
+    <div id="confirm-modal" class="modal">
+      <div class="modal-content" style="max-width: 320px; text-align: center; padding: 25px;">
+        <h3 id="confirm-title" style="margin-top:0; font-size:1.3rem;">⚠️ Confirm Action</h3>
+        <p id="confirm-message" style="margin: 15px 0; color: var(--text-secondary); font-size:1rem;">Are you sure?</p>
+        <div style="display: flex; justify-content: center; gap: 15px; margin-top: 25px;">
+           <button class="btn" id="btn-confirm-cancel" style="background:#eee; color:#333; flex:1; border:none;">Cancel</button>
+           <button class="btn btn-primary" id="btn-confirm-yes" style="flex:1">Confirm</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       // TOAST FUNCTION
       function showToast(msg, type = "success") {
@@ -681,6 +824,7 @@
       // HELPER: Format UID for display (e.g. AABBCC -> AA BB CC)
       function formatUID(uid) {
         if (!uid || uid.length < 2) return uid;
+        if (uid.includes(" ")) return uid;
         return uid.toUpperCase().replace(/(.{2})(?=.)/g, "$1 ");
       }
 
@@ -759,19 +903,24 @@
 
       // LOGOUT LOGIC
       function showLogoutModal() {
+        const uidEl = document.getElementById("profile-uid");
+        const statusText = uidEl ? uidEl.innerText : "Not Logged In";
+
+        // Logic: If NOT logged in via card (Not Logged In), Direct Web Logout
+        if (statusText === "Not Logged In" || statusText === "") {
+             logoutWeb();
+             return;
+        }
+
+        // If Card Logged In, Show Modal to choose
         document.getElementById("logout-modal").style.display = "flex";
-        // Check if card is logged in (based on UI text)
-        const statusText = document.getElementById("auth-uid").innerText;
+        
         const btnCard = document.getElementById("btn-logout-card");
-        if (statusText.includes("Guest") || statusText === "") {
-          btnCard.style.opacity = "0.5";
-          btnCard.style.pointerEvents = "none";
-          btnCard.innerText = "💳 Card not logged in";
-        } else {
-          btnCard.style.opacity = "1";
-          btnCard.style.pointerEvents = "auto";
-          btnCard.innerText =
-            "💳 Sign out Card (" + statusText.replace("👤 ", "") + ")";
+        if(btnCard) {
+             // Reset style just in case
+             btnCard.style.opacity = "1";
+             btnCard.style.pointerEvents = "auto";
+             btnCard.innerText = "💳 Sign out Card (" + statusText + ")";
         }
       }
       function closeLogoutModal() {
@@ -798,24 +947,81 @@
           updateAuthUI(data.uid);
         } catch (e) {}
       }
-      function updateAuthUI(uid) {
+      function toggleProfileDropdown() {
+          const dd = document.getElementById("profile-dropdown");
+          dd.classList.toggle("show");
+      }
+      
+      // Close dropdown if clicked outside
+      window.onclick = function(event) {
+          if (!event.target.closest('.profile-btn') && !event.target.closest('.profile-dropdown')) {
+             const downs = document.getElementsByClassName("profile-dropdown");
+             for (let i = 0; i < downs.length; i++) {
+                 if (downs[i].classList.contains('show')) {
+                     downs[i].classList.remove('show');
+                 }
+             }
+          }
+      }
+
+      function updateAuthUI(uidDisplay) {
         const div = document.getElementById("auth-info");
-        const span = document.getElementById("auth-uid");
+        
+        // Always show
+        div.style.display = "block";
+        
+        let initial = "G";
+        let role = "Guest";
+        let uid = "Not Logged In";
+        
+        if (uidDisplay && typeof uidDisplay === "string" && uidDisplay !== "") {
+           // Parse "Role (UID)"
+           if(uidDisplay.includes("(")) {
+               const parts = uidDisplay.split("(");
+               role = parts[0].trim();
+               uid = parts[1].replace(")", "").trim();
+               initial = role.charAt(0).toUpperCase();
 
-        // Always show the logout container to allow Web Logout
-        div.style.display = "flex";
+               // If Role is Admin, Try to Fetch Name from /view-users
+               if(role === "Admin") {
+                   fetch("/view-users?r=" + Math.random())
+                   .then(r=>r.text())
+                   .then(txt => {
+                       const lines = txt.split('\n');
+                       for(let l of lines) {
+                           const c = l.split(',');
+                           // Format: UID[0], Role[1], Prefix[2], NameEN[3]
+                           if(c.length > 3 && c[0] === uid) {
+                               const nameEN = c[3];
+                               if(nameEN && nameEN !== "-" && nameEN !== "") {
+                                   document.getElementById("profile-name").innerText = nameEN;
+                                   document.getElementById("profile-initials").innerText = nameEN.charAt(0).toUpperCase();
+                                   document.getElementById("profile-avatar-lg").innerText = nameEN.charAt(0).toUpperCase();
+                               }
+                           }
+                       }
+                   });
+               }
+           } else {
+               // Fallback
+               role = "User";
+               uid = uidDisplay;
+               initial = "U";
+           }
+        }
 
-        if (uid && typeof uid === "string" && uid !== "") {
-          span.innerText = "👤 " + formatUID(uid);
-          span.style.background = "#e3f2fd";
-          span.style.color = "#1565c0";
-          span.style.display = "inline-block";
-        } else {
-          // Card not logged in
-          span.innerText = "Guest";
-          span.style.background = "transparent";
-          span.style.color = "#666";
-          span.style.display = "none"; // Hide the UID badge but keep button
+        document.getElementById("profile-initials").innerText = initial;
+        document.getElementById("profile-avatar-lg").innerText = initial;
+        document.getElementById("profile-name").innerText = role;
+        document.getElementById("profile-uid").innerText = formatUID(uid);
+
+        const btnLogin = document.getElementById("btn-login-card");
+        if(btnLogin) {
+             if(!uidDisplay || uidDisplay === "") {
+                 btnLogin.style.display = "block";
+             } else {
+                 btnLogin.style.display = "none";
+             }
         }
       }
       function switchPage(pageId) {
@@ -843,45 +1049,98 @@
         "00": "Unknown",
       };
       const verifyMap = {
-        1: "OK",
-        2: "DENIED",
-        3: "NOTFOUND",
-        4: "EXPIRED",
-        5: "INVALID",
+        1: "OK", 2: "DENIED", 3: "NOTFOUND", 4: "EXPIRED", 5: "INVALID",
+        7: "LOGIN SUCCESS", 8: "LOGIN DENIED"
       };
       const badgeClass = {
-        1: "bg-success",
-        2: "bg-danger",
-        3: "bg-warning",
-        4: "bg-danger",
-        5: "bg-dark",
+        1: "bg-success", 2: "bg-danger", 3: "bg-warning", 4: "bg-danger", 5: "bg-dark",
+        7: "bg-success", 8: "bg-danger"
       };
       const readerMap = { 1: "IN", 2: "OUT" };
+      const titleMap = {
+        "10": "Mr.", "11": "Ms.", "12": "Mrs.", "13": "Miss", 
+        "20": "Dr.", "21": "Prof.", "30": "Tchr.", "40": "Std.", "41": "U.Std."
+      };
+      const titleMapTH = {
+        "10": "นาย", "11": "นางสาว", "12": "นาง", "13": "นางสาว", 
+        "20": "ดร.", "21": "ศ.", "30": "ครู", "40": "นักเรียน", "41": "นักศึกษา"
+      };
+
+      async function fetchUserMap() {
+          try {
+              const res = await fetch("view-users?r=" + Math.random());
+              const text = await res.text();
+              const map = {};
+              text.split("\n").slice(1).forEach(r => {
+                  const c = r.split(",");
+                  if(c.length > 0 && c[0] !== "") map[c[0]] = c;
+              });
+              return map;
+          } catch(e) { return {}; }
+      }
+
+      function formatUserInfo(uid, userMap) {
+          if(!uid) return "-";
+          const c = userMap[uid];
+          // If no user details, fallback
+          if(!c) return `<div style="font-weight:bold">${formatUID(uid)}</div>`;
+
+          // c: [0:UID, 1:Role, 2:Prefix, 3:EN, 4:TH, 5:Code ...]
+          const prefixStr = titleMap[c[2]] || "";
+          const prefixStrTH = titleMapTH[c[2]] || "";
+          let nameHTML = "";
+          
+          if (c[4] && c[4] !== "-" && c[4] !== "") nameHTML += `<div>${prefixStrTH}${c[4]}</div>`;
+          if (c[3] && c[3] !== "-" && c[3] !== "") nameHTML += `<div style="color:#666; font-size:0.85em">${prefixStr} ${c[3]}</div>`;
+          
+          // If no names
+          if(nameHTML === "") nameHTML = "<div>(No Name)</div>";
+
+          const code = (c[5] && c[5] !== "-" && c[5] !== "") ? 
+                       `<div style="font-weight:bold; color:var(--primary-color)">${c[5]}</div>` : "";
+          
+          return `
+            ${code}
+            ${nameHTML}
+            <small style="font-family:monospace;color:#999; display:block; margin-top:2px">${formatUID(uid)}</small>
+          `;
+      }
+
       async function loadReaderLog() {
         try {
-          const res = await fetch("view-log?r=" + Math.random());
-          const text = await res.text();
+          // Parallel Fetch
+          const [logRes, userMap] = await Promise.all([
+              fetch("view-log?r=" + Math.random()),
+              fetchUserMap()
+          ]);
+          const text = await logRes.text();
           const rows = text.trim().split("\n").slice(1).reverse();
           let html = "";
           rows.forEach((r) => {
             const c = r.split(",");
-            if (c.length < 6) return;
+            if (c.length < 6) return; // Date,Time,Reader,UID,Role,Verify
             const status = verifyMap[c[5]] || "Unknown";
-            const badge = badgeClass[c[5]] || "bg-dark";
-            const reader = readerMap[c[2]] || c[2];
-            html += `<tr><td><span class="badge ${badge}">${status}</span></td><td>${
-              c[0]
-            }<br><small style="color:#888">${
-              c[1]
-            }</small></td><td><b>${reader}</b></td><td><code style="white-space:nowrap">${formatUID(
-              c[3]
-            )}</code></td><td>${roleMap[c[4]] || c[4]}</td></tr>`;
+            let badge = badgeClass[c[5]] || "bg-dark";
+            
+            // Special styling for Login Denied only (optional, or keep standard)
+            // if (c[5] == 8) badge = "bg-light text-danger fw-bold border border-danger";
+
+            // Standard Reader Display (IN/OUT)
+            let reader = readerMap[c[2]] || c[2];
+            
+            html += `<tr>
+                <td><span class="badge ${badge}">${status}</span></td>
+                <td>${c[0]}<br><small style="color:#888">${c[1]}</small></td>
+                <td><b>${reader}</b></td>
+                <td>${formatUserInfo(c[3], userMap)}</td>
+                <td>${roleMap[c[4]] || c[4]}</td>
+            </tr>`;
           });
           document.querySelector("#table-reader tbody").innerHTML =
-            html ||
-            '<tr><td colspan="5" class="empty-state">No logs found</td></tr>';
+            html || '<tr><td colspan="5" class="empty-state">No logs found</td></tr>';
         } catch (e) {}
       }
+
       async function loadUserLog() {
         const map = {
           C: '<span class="badge bg-success">Created</span>',
@@ -889,22 +1148,33 @@
           D: '<span class="badge bg-danger">Deleted</span>',
         };
         try {
-          const res = await fetch("view-userslog?r=" + Math.random());
-          const text = await res.text();
+          const [logRes, userMap] = await Promise.all([
+              fetch("view-userslog?r=" + Math.random()),
+              fetchUserMap()
+          ]);
+          const text = await logRes.text();
           const rows = text.trim().split("\n").slice(1).reverse();
           let html = "";
           rows.forEach((r) => {
-            const c = r.split(",");
+            const c = r.split(","); // Date,Time,Event,OperatorUID,TargetUID
             if (c.length < 5) return;
-            html += `<tr><td>${map[c[2]] || c[2]}</td><td>${c[0]} <small>${
-              c[1]
-            }</small></td><td><code style="white-space:nowrap">${
-              formatUID(c[4]) || "-"
-            }</code></td><td>${c[3] || "System"}</td></tr>`;
+            
+            // Operator might be system/admin
+            let operator = c[3];
+            if(userMap[c[3]]) operator = formatUserInfo(c[3], userMap);
+            else if (roleMap[c[3]]) operator = roleMap[c[3]]; // Plain role if no user found
+            
+            html += `<tr>
+                <td>${map[c[2]] || c[2]}</td>
+                <td>${c[0]} <small>${c[1]}</small></td>
+                <td>${formatUserInfo(c[4], userMap)}</td>
+                <td>${operator}</td>
+            </tr>`;
           });
-          document.querySelector("#table-userslog tbody").innerHTML = html;
+          document.querySelector("#table-userslog tbody").innerHTML = html || '<tr><td colspan="4" class="empty-state">No logs found</td></tr>';
         } catch (e) {}
       }
+
       async function loadSystemLog() {
         try {
           const res = await fetch("view-systemlog?r=" + Math.random());
@@ -914,31 +1184,20 @@
           rows.forEach((r) => {
             const c = r.split(",");
             if (c.length < 3) return;
-            html += `<tr><td>${c[0]} ${c[1]}</td><td><b>${c[2]}</b></td><td>${
-              c[3] || ""
-            }</td></tr>`;
+            html += `<tr><td>${c[0]} ${c[1]}</td><td><b>${c[2]}</b></td><td>${c[3] || ""}</td></tr>`;
           });
-          document.querySelector("#table-system tbody").innerHTML = html;
+          document.querySelector("#table-system tbody").innerHTML = html || '<tr><td colspan="3" class="empty-state">No logs found</td></tr>';
         } catch (e) {}
       }
+
       async function loadUsageStats() {
         try {
-          // 1. Get Usage Data
-          const res = await fetch("view-usage?r=" + Math.random());
-          const text = await res.text();
+          const [statRes, userMap] = await Promise.all([
+              fetch("view-usage?r=" + Math.random()),
+              fetchUserMap()
+          ]);
+          const text = await statRes.text();
           const rows = text.trim().split("\n").slice(1);
-
-          // 2. Get User Map for Names
-          const uRes = await fetch("view-users?r=" + Math.random());
-          const uText = await uRes.text();
-          const nameMap = {};
-          uText
-            .split("\n")
-            .slice(1)
-            .forEach((r) => {
-              const c = r.split(",");
-              if (c.length > 3) nameMap[c[0]] = c[3] || c[4];
-            });
 
           let html = "";
           let totalStats = 0;
@@ -949,71 +1208,61 @@
             const count = parseInt(c[1]) || 0;
             totalStats += count;
 
-            const name = nameMap[c[0]] ? " (" + nameMap[c[0]] + ")" : "";
-
             html += `<tr>
-                    <td><code>${formatUID(c[0])}</code><b>${name}</b></td>
+                    <td>${formatUserInfo(c[0], userMap)}</td>
                     <td><span class="badge bg-success">${count}</span></td>
                     <td><small>${c[2]}</small></td>
                  </tr>`;
           });
 
-          document.querySelector("#table-usage tbody").innerHTML = html;
-
-          // Update Total Dashboard Counter if exists
+          document.querySelector("#table-usage tbody").innerHTML = html || '<tr><td colspan="3" class="empty-state">No stats found</td></tr>';
           const totalEl = document.getElementById("total-access-count");
           if (totalEl) totalEl.innerText = totalStats;
         } catch (e) {}
       }
+
       async function loadMembers() {
         try {
+          const userMap = await fetchUserMap(); // Use shared fetch
+          // But loadMembers needs the array order? fetchUserMap returns obj.
+          // Let's refetch as array for members or convert map to array?
+          // The order in map keys isn't guaranteed reversed.
+          // Better to fetch raw text again for Members to keep order OR just Object.values(map) (but order lost).
+          // Let's stick to raw fetch for Members to ensure we match `view-users` original order (or modify fetchUserMap to return list too).
+          // Actually, let's just re-fetch to be safe and simple.
           const res = await fetch("view-users?r=" + Math.random());
           const text = await res.text();
           const rows = text.trim().split("\n").slice(1);
+          
           let html = "";
-          rows.forEach((r, idx) => {
+          rows.forEach((r) => {
             const c = r.split(",");
             if (c.length < 2) return;
             const inputs = JSON.stringify(c).replace(/'/g, "&apos;");
-            const prefix =
-              c[2] === "XX"
-                ? ""
-                : c[2] === "10"
-                ? "Mr."
-                : c[2] === "11"
-                ? "Ms."
-                : "";
-            const name = `${prefix} ${c[3] || c[4] || "S"}`;
+            
             let guestInfo = '<span class="badge bg-success">Permanent</span>';
-            if (c[1] === "01") {
+            if (c[1] === "01") { // Guest Logic
               const now = new Date();
               const endDate = c[9] ? new Date(c[9]) : null;
               const isExpired = endDate && now > endDate;
-
               if (isExpired) {
-                guestInfo =
-                  '<span class="badge bg-danger">EXPIRED</span><br><small> Ended: ' +
-                  (c[9] ? c[9].replace("T", " ") : "-") +
-                  "</small>";
+                guestInfo = `<span class="badge bg-danger">EXPIRED</span><br><small>Ended: ${c[9] ? c[9].replace("T", " ") : "-"}</small>`;
               } else {
-                guestInfo = `<small>Start: ${
-                  c[8] ? c[8].replace("T", " ") : "-"
-                }<br><span style="color:red">End: ${
-                  c[9] ? c[9].replace("T", " ") : "-"
-                }</span></small>`;
+                guestInfo = `<small>Start: ${c[8] ? c[8].replace("T", " ") : "-"}<br><span style="color:red">End: ${c[9] ? c[9].replace("T", " ") : "-"}</span></small>`;
               }
             }
-            html += `<tr><td><b>${name}</b><br><small style="font-family:monospace;color:#555">${formatUID(
-              c[0]
-            )}</small></td><td>${
-              roleMap[c[1]] || c[1]
-            }</td><td>${guestInfo}</td><td><button class="btn btn-sm btn-primary" onclick='editUser(${inputs})'>✏️</button> <button class="btn btn-sm btn-danger" onclick="deleteUser('${
-              c[0]
-            }')">🗑️</button></td></tr>`;
+            
+            html += `<tr>
+                <td>${formatUserInfo(c[0], userMap)}</td>
+                <td>${roleMap[c[1]] || c[1]}</td>
+                <td>${guestInfo}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick='editUser(${inputs})'>✏️</button> 
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser('${c[0]}')">🗑️</button>
+                </td>
+            </tr>`;
           });
-          document.querySelector("#table-users tbody").innerHTML =
-            html ||
-            '<tr><td colspan="4" class="empty-state">No members found</td></tr>';
+          document.querySelector("#table-users tbody").innerHTML = html || '<tr><td colspan="4" class="empty-state">No members found</td></tr>';
         } catch (e) {}
       }
       async function loadUnknownUIDs() {
@@ -1086,14 +1335,130 @@
         toggleGuestFields();
       }
 
-      // Use Toast Confirm for dangerous actions? No, standard confirm is safer for delete. But let's keep it standard for now.
+      let confirmCallback = null;
+      function showConfirm(msg, callback) {
+          document.getElementById("confirm-message").innerText = msg;
+          document.getElementById("confirm-modal").style.display = "flex";
+          confirmCallback = callback;
+      }
+      function closeConfirmModal() {
+          document.getElementById("confirm-modal").style.display = "none";
+          confirmCallback = null;
+      }
+      // Attach listener once
+      document.getElementById("btn-confirm-yes").onclick = function() {
+          if(confirmCallback) confirmCallback();
+          closeConfirmModal();
+      };
+      document.getElementById("btn-confirm-cancel").onclick = closeConfirmModal;
+
+
+      function exportCurrentTable(format = 'csv') {
+         const activePage = document.querySelector('.page.active');
+         if(!activePage) return;
+         const table = activePage.querySelector('table');
+         if(!table || table.querySelector('.empty-state')) {
+             showToast("No data to export", "error");
+             return;
+         }
+         
+         const timestamp = new Date().toISOString().slice(0,19).replace(/[-T:]/g,"");
+         let filename = "export_" + activePage.id.replace("page-","") + "_" + timestamp;
+         let blobContent = null;
+         let mimeType = "";
+
+         if (format === 'csv') {
+             const rows = Array.from(table.querySelectorAll('tr'));
+             const csvContent = rows.map(row => {
+                 const cols = Array.from(row.querySelectorAll('th, td'));
+                 // Skip Actions column if present
+                 if(cols.length > 0 && cols[cols.length-1].innerText === "Actions") return null;
+                 
+                 return cols.map((col, index) => {
+                     let text = col.innerText.replace(/(\r\n|\n|\r)/gm, " ").replace(/"/g, '""');
+                     return `"${text}"`;
+                 }).join(",");
+             }).filter(r => r).join("\n");
+             
+             blobContent = "\uFEFF" + csvContent;
+             mimeType = 'text/csv;charset=utf-8;';
+             filename += ".csv";
+         } 
+         else if (format === 'xls') {
+             // HTML Export for "Excel"
+             const clone = table.cloneNode(true);
+             
+             // Remove Action Columns from Clone
+             const rows = Array.from(clone.querySelectorAll('tr'));
+             rows.forEach(r => {
+                 const cells = Array.from(r.children);
+                 if (cells.length > 0) {
+                    const lastCell = cells[cells.length-1];
+                    if(lastCell.innerText === "Actions" || lastCell.innerHTML.includes("<button")) {
+                        r.removeChild(lastCell);
+                    }
+                 }
+                 // Add simple formatting for Excel
+                 Array.from(r.children).forEach(td => {
+                    td.style.border = "1px solid #ddd";
+                    td.style.padding = "5px";
+                 });
+             });
+
+             const template = `
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<!--[if gte mso 9]>
+<xml>
+<x:ExcelWorkbook>
+<x:ExcelWorksheets>
+<x:ExcelWorksheet>
+<x:Name>Export</x:Name>
+<x:WorksheetOptions>
+<x:DisplayGridlines/>
+</x:WorksheetOptions>
+</x:ExcelWorksheet>
+</x:ExcelWorksheets>
+</x:ExcelWorkbook>
+</xml>
+<![endif]-->
+<meta charset="UTF-8">
+<style>table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: 5px; mso-number-format:"\@"; }</style>
+</head>
+<body>
+${clone.outerHTML}
+</body>
+</html>`;
+             blobContent = template;
+             mimeType = 'application/vnd.ms-excel';
+             filename += ".xls";
+         }
+
+         const blob = new Blob([blobContent], { type: mimeType });
+         const link = document.createElement("a");
+         const url = URL.createObjectURL(blob);
+         
+         link.setAttribute("href", url);
+         link.setAttribute("download", filename);
+         link.style.visibility = 'hidden';
+         document.body.appendChild(link);
+         link.click();
+         document.body.removeChild(link);
+         
+         document.getElementById('fab').classList.remove('active'); // Close menu
+         showToast("Exported " + filename);
+      }
+
+      // Use Toast Confirm for dangerous actions? Yes, now custom modal.
       function clearLog(type) {
-        if (confirm("Are you sure you want to clear " + type + " logs?"))
-          postAction("clear_log", { type: type });
+        showConfirm("Are you sure you want to clear " + type + " logs?", function() {
+           postAction("clear_log", { type: type });
+        });
       }
       function deleteUser(uid) {
-        if (confirm("Delete User " + uid + "?"))
-          postAction("delete_user", { uid: uid });
+        showConfirm("Delete User " + uid + "?", function() {
+           postAction("delete_user", { uid: uid });
+        });
       }
       function validateForm() {
         const form = document.querySelector("form");
@@ -1123,3 +1488,4 @@
     </script>
   </body>
 </html>
+)=====";

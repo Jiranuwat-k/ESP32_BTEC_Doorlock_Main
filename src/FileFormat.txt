@@ -1,6 +1,6 @@
 Ex.
 0 -> Null
-Prefix [10:Mr, 11:Ms, 12:Mrs, 13:Miss, 20:Dr, 21:Prof, XX:Etc]
+Prefix [10:Mr, 11:Ms, 12:Mrs, 13:Miss, 20:Dr, 21:Prof, 30:Teacher, 40:Student, 41:UniStudent, XX:Etc]
 Gender [1:Male, 2:Female, X:Etc]
 Event [C,M,D]
 Verify [1:OK, 2:DENIED, 3:NOTFOUND, 4:EXPIRED, 5:NOTVALID, X:Etc]

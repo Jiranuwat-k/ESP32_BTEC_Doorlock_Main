@@ -2,6 +2,7 @@
 #include "Config.h"
 #include "Global.h"
 #include "Filehelper.h"
+#include "index.h"
 
 MFRC522 mfrc522_IN(SS_PIN, RST_PIN);
 MFRC522 mfrc522_OUT(SS2_PIN, RST_PIN);
@@ -174,7 +175,7 @@ void initWifi()
     Serial.println("Success!");
     Tick.detach();
     digitalWrite(LED_BUILTIN,HIGH); });
-  updateServer.begin("/update", "Admin", "Admin");
+  updateServer.begin("/update", http_username, http_password);
   wifimanager.begin("Manager");
 
   updateServer.on(UPDATE_BEGIN, [](const OTA_UpdateType type, int &result)
@@ -185,7 +186,7 @@ void initWifi()
                   {
       Serial.print("Update End. Result: ");
       Serial.println(result == OTA_UpdateResult::OTA_UPDATE_OK ? "OK" : "Error"); });
-  updateServer.begin("/update", "Admin", "Admin");
+  updateServer.begin("/update", http_username, http_password);
 }
 
 void initTime()
@@ -327,11 +328,7 @@ void setup()
   // Route for root / web page (SECURED)
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
       if(!checkUserWebAuth(request)) { request->redirect("/login"); return; }
-      request->send(LittleFS, "/index.html", "text/html", false); 
-  });
-
-  server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) { 
-      request->send(LittleFS, "/style.css", "text/css"); 
+      request->send(200, "text/html", index_html); 
   });
 
   // PROTECT VIEW ROUTES
@@ -387,7 +384,7 @@ void setup()
       if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired"); // Web Auth First
       
       // Smart Card Auth Check
-      if(adminSessionUID == "") {
+      if(ENABLE_MAINKEY_SYSTEM && adminSessionUID == "") {
           request->send(401, "text/plain", "Unauthorized: Please scan Admin Card");
           return;
       }
@@ -395,7 +392,13 @@ void setup()
       adminSessionTimer = millis(); // Refresh Card Session
 
       String action = request->hasParam("action", true) ? request->getParam("action", true)->value() : "";
-      String operatorStr = adminSessionRole + " (" + adminSessionUID + ")";
+      
+      String operatorStr;
+      if (adminSessionUID != "") {
+          operatorStr = adminSessionRole + " (" + adminSessionUID + ")";
+      } else {
+          operatorStr = "System/Bypass"; // Default for when MainKey System is disabled
+      }
 
       if(action == "clear_log") {
           String type = request->hasParam("type", true) ? request->getParam("type", true)->value() : "";
@@ -440,7 +443,7 @@ void setup()
           String uid = request->hasParam("uid", true) ? request->getParam("uid", true)->value() : "";
           String role = request->hasParam("role", true) ? request->getParam("role", true)->value() : "10";
           if(uid == "") { request->send(400, "text/plain", "Missing UID"); return; }
-          if(role == "50" && adminSessionUID != MAIN_KEY_UID) {
+          if(role == "50" && ENABLE_MAINKEY_SYSTEM && adminSessionUID != MAIN_KEY_UID) {
               request->send(403, "text/plain", "Permission Denied: Only MainKey can create Admins");
               return;
           }
@@ -460,11 +463,82 @@ void setup()
           String existingUser = getUserDataFromFile(LittleFS, "/users.txt", uid);
           bool isNew = (existingUser == String(FILE_ERR_NOTFOUND) || existingUser == String(FILE_ERR_OPEN));
           upsertUser(LittleFS, "/users.txt", uid, finalData);
+          
+          // Reset Anti-Passback state to allow immediate re-entry
+          updateUserState(uid, STATE_OUTSIDE);
 
           String evt = isNew ? "C" : "M";
           maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
           appendFile(LittleFS, "/userslog.txt", (evt + "," + operatorStr + "," + uid).c_str());
           request->send(200, "text/plain", "User Saved");
+      }
+      else if(action == "cleanup_expired") {
+          if (!AUTO_CLEANUP_EXPIRED_GUESTS) {
+              request->send(403, "text/plain", "Auto Cleanup Disabled in Config");
+              return;
+          }
+
+          File file = LittleFS.open("/users.txt", "r");
+          if (!file) { request->send(500, "text/plain", "File Error"); return; }
+          
+          File temp = LittleFS.open("/users.temp", "w");
+          if (!temp) { file.close(); request->send(500, "text/plain", "Temp File Error"); return; }
+          
+          int count = 0;
+          struct tm tmstruct;
+          getLocalTime(&tmstruct, 100);
+          char currentStr[20];
+          snprintf(currentStr, sizeof(currentStr), "%04d-%02d-%02d %02d:%02d", tmstruct.tm_year+1900, tmstruct.tm_mon+1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min);
+          String nowStr = String(currentStr);
+
+          // Keep Header
+          String header = file.readStringUntil('\n');
+          temp.println(header);
+
+          while (file.available()) {
+              String line = file.readStringUntil('\n');
+              line.trim();
+              if (line.length() == 0) continue;
+              
+              int c1 = line.indexOf(','); 
+              int c2 = line.indexOf(',', c1+1);
+              
+              String role = "";
+              if(c2 > 0) role = line.substring(c1+1, c2);
+              else if(c1 > 0) role = line.substring(c1+1);
+              role.trim();
+
+              bool remove = false;
+              if (role == "01") { // Guest
+                   // Get Dates (Index 8, 9)
+                   int idx = 0; int start = 0;
+                   for(int i=0; i<9; i++) {
+                       start = line.indexOf(',', start); 
+                       if(start == -1) break; 
+                       start++;
+                   }
+                   if(start != -1) {
+                       String expireDate = line.substring(start);
+                       expireDate.trim();
+                       if(nowStr >= expireDate) remove = true;
+                   }
+              }
+
+              if (remove) {
+                  count++;
+                  // Log
+                  String uid = line.substring(0, c1);
+                  maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
+                  appendFile(LittleFS, "/userslog.txt", (String("D") + "," + operatorStr + " (Cleanup)," + uid).c_str());
+              } else {
+                  temp.println(line);
+              }
+          }
+          file.close();
+          temp.close();
+          LittleFS.remove("/users.txt");
+          LittleFS.rename("/users.temp", "/users.txt");
+          request->send(200, "text/plain", "Cleanup Complete: Removed " + String(count) + " users");
       }
       else {
           request->send(400, "text/plain", "Unknown Action");
@@ -483,7 +557,7 @@ void openDoor()
   Serial.println("Door Unlocked");
 }
 
-int verifyUID(String uid, String &role) {
+int verifyUID(String uid, String &role, bool isExit) {
   // 1. MAIN KEY CHECK (Always Allowed - Highest Priority)
   if (uid == MAIN_KEY_UID) {
       // If we are in Login Mode (Waiting for Admin Scan)
@@ -495,6 +569,8 @@ int verifyUID(String uid, String &role) {
            // Double Beep for Login Success
            digitalWrite(BUZZER_PIN, BUZZER_ON); delay(100); digitalWrite(BUZZER_PIN, BUZZER_OFF); delay(100);
            digitalWrite(BUZZER_PIN, BUZZER_ON); delay(200); digitalWrite(BUZZER_PIN, BUZZER_OFF);
+           role = "MainKey"; 
+           return VERIFY_LOGIN_OK;
       } else {
            // Normal Access - Open Door
             Serial.println("Access Granted (Main Key)");
@@ -531,12 +607,12 @@ int verifyUID(String uid, String &role) {
            adminSessionTimer = millis();
            waitingForAdminLogin = false;
            digitalWrite(BUZZER_PIN, BUZZER_ON); delay(100); digitalWrite(BUZZER_PIN, BUZZER_OFF);
-           return VERIFY_OK;
+           return VERIFY_LOGIN_OK;
       }
       
       // Login Failed
       deniedBeepState = 1; deniedBeepTimer = millis();
-      return VERIFY_DENIED;
+      return VERIFY_LOGIN_FAIL;
   }
 
   // 3. NORMAL ACCESS FLOW (Open Door)
@@ -588,21 +664,57 @@ int verifyUID(String uid, String &role) {
       snprintf(currentStr, sizeof(currentStr), "%04d-%02d-%02d %02d:%02d", tmstruct.tm_year+1900, tmstruct.tm_mon+1, tmstruct.tm_mday, tmstruct.tm_hour, tmstruct.tm_min);
       String nowStr = String(currentStr);
       
-      if (nowStr >= startDateStr && nowStr <= expireDateStr) {
+      // Strict Expiry: Expire AS SOON AS the minute matches (Exclusive)
+      if (nowStr >= startDateStr && nowStr < expireDateStr) {
           // Removed direct hardware control
           return VERIFY_OK;
       } else {
           deniedBeepState = 1; deniedBeepTimer = millis();
+
+          if (nowStr >= expireDateStr) {
+             // Check Grace Period for EXIT
+             if (isExit) {
+                 int y, M, d, h, m;
+                 if(sscanf(expireDateStr.c_str(), "%d-%d-%d %d:%d", &y, &M, &d, &h, &m) == 5) {
+                      struct tm expireTm = {0};
+                      expireTm.tm_year = y - 1900;
+                      expireTm.tm_mon = M - 1;
+                      expireTm.tm_mday = d;
+                      expireTm.tm_hour = h;
+                      expireTm.tm_min = m;
+                      expireTm.tm_isdst = -1;
+                      
+                      time_t tExpire = mktime(&expireTm);
+                      time_t tNow = mktime(&tmstruct); // tmstruct populated earlier
+                      
+                      double diff = difftime(tNow, tExpire);
+                      // Grace Period: 30 Minutes (1800 Seconds)
+                      if(diff >= 0 && diff <= 1800) {
+                           Serial.printf("Guest Expiry Grace Period: %.0f sec (Allowed Exit)\n", diff);
+                           return VERIFY_OK; 
+                      }
+                 }
+             }
+
+
+
+             // Auto Delete Expired Guest (Verified Expired & No Grace)
+             if (AUTO_CLEANUP_EXPIRED_GUESTS) {
+                 Serial.println("Guest Expired. Deleting...");
+                 deleteUserByUID(LittleFS, "/users.txt", uid);
+              
+                 // Log deletion
+                 maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
+                 appendFile(LittleFS, "/userslog.txt", (String("D") + ",System (Expired)," + uid).c_str());
+             } else {
+                 Serial.println("Guest Expired (Auto Delete Disabled)");
+             }
           
-          // Auto Delete Expired Guest
-          Serial.println("Guest Expired. Deleting...");
-          deleteUserByUID(LittleFS, "/users.txt", uid);
-          
-          // Log deletion
-          maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
-          appendFile(LittleFS, "/userslog.txt", (String("D") + ",System (Expired)," + uid).c_str());
-          
-          return VERIFY_EXPIRED;
+             return VERIFY_EXPIRED;
+          } else {
+             Serial.println("Guest Access: Not Yet Active (or Invalid Range)");
+             return VERIFY_DENIED;
+          }
       }
   }
 
@@ -651,7 +763,8 @@ void handleReader(int ID, MFRC522 &mfrc522)
 
   // Check Permissions First
   String tempRole = "";
-  int permCode = verifyUID(uidString, tempRole); // This only checks "CAN THIS CARD OPEN DOOR?"
+  // Pass isExit = true if Reader ID is OUT
+  int permCode = verifyUID(uidString, tempRole, (ID == READER_OUT));
   
   // If permission OK, check Direction Logic
   if (permCode == VERIFY_OK) {
@@ -681,19 +794,10 @@ void handleReader(int ID, MFRC522 &mfrc522)
                if (!isInside) {
                    Serial.println("Anti-Passback: Already Outside (or didn't tap in)!");
                    // STRICT MODE: Deny. 
-                   // RELAXED MODE: Allow out anyway (to fix sync issues).
-                   // User asked: "Must tap out before count 1". So if already outside, maybe just open but don't count? 
-                   // request: "If tap IN, can't tap IN again until tap OUT".
-                   // So if tap OUT and already OUT, it's weird but maybe acceptable or deny?
-                   // Let's assume STRICT for "counting logic":
-                   // But usually for safety, OUT should always open? 
-                   // Re-reading user: "Check IN/OUT count -> 1 cycle". "Can't Tap IN again".
-                   // So OUT is less strict? 
-                   // Let's allow OUT always to reset state.
-                   allow = true; 
+                   allow = false; 
                    role = tempRole;
-                   currentCode = VERIFY_OK;
-                   updateUserState(uidString, STATE_OUTSIDE);
+                   currentCode = VERIFY_DENIED;
+                   deniedBeepState = 1; deniedBeepTimer = millis();
                } else {
                    allow = true; 
                    role = tempRole;

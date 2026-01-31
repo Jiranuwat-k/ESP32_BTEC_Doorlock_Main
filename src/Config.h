@@ -73,6 +73,8 @@ const char* Role_Unknown        = "00"; // unknown UID
 #define VERIFY_EXPIRED      4
 #define VERIFY_NOTVALID     5
 #define VERIFY_INVALID      6
+#define VERIFY_LOGIN_OK     7
+#define VERIFY_LOGIN_FAIL   8
 
 // Gender Constants
 #define GENDER_MALE         1
@@ -83,4 +85,9 @@ const char* Role_Unknown        = "00"; // unknown UID
 #define EVENT_CREATE        'C'
 #define EVENT_MODIFY        'M'
 #define EVENT_DELETE        'D'
+
+// Feature Toggles
+const bool AUTO_CLEANUP_EXPIRED_GUESTS = false; // Set to true to enable auto-deletion of expired guests
+const bool ENABLE_MAINKEY_SYSTEM = false; // Set to false to allow Admin creation without MainKey
+
 #endif

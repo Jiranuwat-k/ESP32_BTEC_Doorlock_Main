@@ -141,7 +141,16 @@ inline void maintainLogFile(fs::FS &fs, const char *path, const char *header) {
   const size_t MAX_LOG_SIZE = 500 * 1024; // 500KB Limit (Holds ~10,000 logs)
 
   File file = fs.open(path, "r");
-  if (!file) return;
+  if (!file) {
+      // Create if doesn't exist (Fix for "Clear Log" bug)
+      file = fs.open(path, "w");
+      if(file){
+        file.print(header);
+        if(String(header).indexOf('\n') == -1) file.print("\n");
+        file.close();
+      }
+      return;
+  }
   size_t size = file.size();
   file.close();
 
@@ -336,7 +345,16 @@ inline int deleteUserByUID(fs::FS &fs, const char* filename, String uid) {
 // Update Usage Stats (UID,Count,LastAccess)
 inline void updateUsageStats(fs::FS &fs, const char *path, String uid) {
     File file = fs.open(path, "r");
-    if (!file) return;
+    if (!file) {
+         // Create new if missing
+         file = fs.open(path, "w");
+         if(file) {
+             file.println("UID,Count,LastAccess");
+             file.close();
+             file = fs.open(path, "r"); // Re-open for logic below
+         }
+         if(!file) return; // Still failed?
+    }
 
     String lines = "";
     bool found = false;
