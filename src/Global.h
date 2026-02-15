@@ -3,7 +3,7 @@
     // Include necessary libraries
     #include <SPI.h>
     #include <MFRC522.h>
-    #include <NfcAdapter.h>
+    // #include <NfcAdapter.h>
     #include <WiFi.h>
     #include <AsyncTCP.h>
     #include <ESPAsyncWebServer.h>

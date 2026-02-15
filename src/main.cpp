@@ -1,12 +1,18 @@
 #include <Arduino.h>
+#include <ESP32Ping.h>
 #include "Config.h"
 #include "Global.h"
 #include "Filehelper.h"
-#include "index.h"
+#include "Filehelper.h"
+#include "web/style.h"
+#include "web/js.h"
+#include "web/settings.h"
+#include "web/tools.h"
+#include "web/index.h"
 
-MFRC522 mfrc522_IN(SS_PIN, RST_PIN);
-MFRC522 mfrc522_OUT(SS2_PIN, RST_PIN);
+MFRC522 mfrc522_OUT(SS_PIN, RST_PIN);
 AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 
 // --- AUTHENTICATION GLOBALS ---
 String adminSessionUID = ""; // Stores UID of currently logged in admin
@@ -59,18 +65,146 @@ int deniedBeepState = 0; // 0=นิ่ง, 1-6=ขั้นตอนการ�
 unsigned long deniedBeepTimer = 0;
 const long deniedBeepInterval = 100;
 
+void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len);
+void updateUserState(String uid, int newState);
+
+// --- NETWORK SCANNER GLOBALS ---
+bool isScanning = false;
+String scanResults = "[]";
+int scanProgress = 0;
+
+// Helpers for MAC and Vendor
+#include <lwip/etharp.h>
+#include <lwip/netif.h>
+
+String getMacFromIp(IPAddress ip) {
+    struct eth_addr *mac_ret;
+    const ip4_addr_t *ip_ret;
+    ip4_addr_t ipaddr;
+    IP4_ADDR(&ipaddr, ip[0], ip[1], ip[2], ip[3]);
+    
+    // Find in ARP cache (only works if we recently contacted them, e.g. Ping)
+    ssize_t idx = etharp_find_addr(NULL, &ipaddr, &mac_ret, &ip_ret);
+    
+    if (idx >= 0) {
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac_ret->addr[0], mac_ret->addr[1], mac_ret->addr[2],
+                 mac_ret->addr[3], mac_ret->addr[4], mac_ret->addr[5]);
+        return String(macStr);
+    }
+    return "";
+}
+
+String getVendor(String mac) {
+    if(mac.length() < 8) return "";
+    String oui = mac.substring(0, 8); // "XX:XX:XX"
+    oui.toUpperCase();
+    
+    // Simple fast lookup for common IoT
+    if(oui.startsWith("24:0A:C4") || oui.startsWith("30:AE:A4") || oui.startsWith("3C:71:BF") || 
+       oui.startsWith("54:43:B2") || oui.startsWith("60:01:94") || oui.startsWith("84:0D:8E") ||
+       oui.startsWith("A0:20:A6") || oui.startsWith("AC:67:B2") || oui.startsWith("EC:FA:BC")) 
+       return "Espressif";
+       
+    if(oui.startsWith("B8:27:EB") || oui.startsWith("DC:A6:32") || oui.startsWith("E4:5F:01"))
+       return "Raspberry Pi";
+       
+    if(oui.startsWith("00:11:32")) return "Synology";
+    if(oui.startsWith("00:1A:11") || oui.startsWith("00:1D:AA")) return "Google";
+    
+    return "";
+}
+
+#include <map>
+
+// ... inside scanTask ...
+void scanTask(void * parameter) {
+    isScanning = true;
+    scanProgress = 0;
+    scanResults = "[]"; 
+    
+    String localRes = "[";
+    IPAddress local = WiFi.localIP();
+    
+    // Map to store IP -> Hostname
+    std::map<String, String> hostMap;
+
+    // Helper to query and cache
+    auto cacheMdns = [&](const char* service, const char* proto) {
+        int n = MDNS.queryService(service, proto);
+        for(int m=0; m<n; m++) {
+            String ip = MDNS.IP(m).toString();
+            String name = MDNS.hostname(m);
+            if(name.length() > 0) hostMap[ip] = name;
+        }
+    };
+    
+    // Query common services to build hostname database
+    // This might take a few seconds total (approx 1s per query call depending on lib)
+    cacheMdns("http", "tcp");
+    cacheMdns("esp", "tcp");
+    cacheMdns("arduino", "tcp");
+    cacheMdns("printer", "tcp");
+    cacheMdns("googlecast", "tcp");
+    cacheMdns("smb", "tcp"); // Windows/Samba
+
+    bool first = true;
+    for (int i = 1; i < 255; i++) {
+        scanProgress = (i * 100) / 255;
+        IPAddress target(local[0], local[1], local[2], i);
+        if (target == local) continue;
+        
+        // Use Ping to check aliveness
+        if (Ping.ping(target, 1)) {
+             String ipStr = target.toString();
+             String mac = getMacFromIp(target);
+             String vendor = getVendor(mac);
+             
+             // Lookup Hostname from our mDNS map
+             String hostname = "";
+             if(hostMap.count(ipStr)) {
+                 hostname = hostMap[ipStr];
+             } else {
+                 if(vendor == "Espressif") hostname = "ESP32/8266";
+                 else if(vendor == "Raspberry Pi") hostname = "Raspberry Pi";
+                 else hostname = "Device " + String(i);
+             }
+             
+             if (!first) localRes += ",";
+             localRes += "{";
+             localRes += "\"ip\":\"" + ipStr + "\",";
+             localRes += "\"hostname\":\"" + hostname + "\",";
+             localRes += "\"port\":80,";
+             localRes += "\"mac\":\"" + mac + "\",";
+             localRes += "\"vendor\":\"" + vendor + "\"";
+             localRes += "}";
+             first = false;
+        }
+        vTaskDelay(5 / portTICK_PERIOD_MS); 
+    }
+    
+    localRes += "]";
+    scanResults = localRes;
+    
+    isScanning = false;
+    scanProgress = 100;
+    vTaskDelete(NULL);
+}
+
 void notFound(AsyncWebServerRequest *request)
 {
   request->send(404, "text/plain", "Not found");
 }
 
 void initRFIDReader()
-{
-  mfrc522_IN.PCD_Init();
+{ 
+  // mfrc522_IN.PCD_Init(); // Removed - Using WS
   mfrc522_OUT.PCD_Init();
-  mfrc522_IN.PCD_DumpVersionToSerial();
+  delay(50);
+  // mfrc522_IN.PCD_DumpVersionToSerial();
   mfrc522_OUT.PCD_DumpVersionToSerial();
-  mfrc522_in_version = mfrc522_IN.PCD_ReadRegister(MFRC522::VersionReg);
+  // mfrc522_in_version = mfrc522_IN.PCD_ReadRegister(MFRC522::VersionReg);
   mfrc522_out_version = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
   Serial.println(F("Scan PICC to see UID"));
 }
@@ -132,16 +266,6 @@ int initLittleFS()
   }
   file.close();
 
-  // 5. usage_stats.txt (New)
-  file = LittleFS.open("/usage_stats.txt");
-  if (!file)
-  {
-    Serial.println("usage_stats.txt file doesn't exist");
-    Serial.println("Creating file...");
-    writeFile(LittleFS, "/usage_stats.txt", "UID,Count,LastAccess\n");
-  }
-  file.close();
-
   // 6. user_state.txt (New - Anti-Passback)
   file = LittleFS.open("/user_state.txt");
   if (!file)
@@ -174,8 +298,11 @@ void initWifi()
     WiFi.hostname("rfid-doorlock");
     Serial.println("Success!");
     Tick.detach();
-    digitalWrite(LED_BUILTIN,HIGH); });
+    digitalWrite(LED_BUILTIN,HIGH); 
+  });
+  
   updateServer.begin("/update", http_username, http_password);
+  wifimanager.setRetryInterval(false); // In Mode Config
   wifimanager.begin("Manager");
 
   updateServer.on(UPDATE_BEGIN, [](const OTA_UpdateType type, int &result)
@@ -201,14 +328,27 @@ void initTime()
       tmstruct.tm_sec);
 }
 
+// Connection Beep Globals
+int connectBeepState = 0;
+unsigned long connectBeepTimer = 0;
+
+// WiFi Config Button Globals
+unsigned long configButtonTimer = 0;
+bool configButtonActive = false;
+
+// WiFi Reconnect Timer
+unsigned long wifiCheckTimer = 0;
+const unsigned long wifiCheckInterval = 30000; // Check every 30 seconds
+
 void handlePeripherals()
 {
   currentMillis = millis();
 
   if (doorActive && (currentMillis - doorTimer >= doorOpenDuration)) {
+    Serial.println("Door Locked (Time out)");
     digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
     doorActive = false;
-    Serial.println("Door Locked (Time out)");
+    ws.textAll("{\"type\":\"door_status\", \"status\":\"locked\"}");
   }
 
   if (successEffectActive && (currentMillis - successEffectTimer >= successEffectDuration)) {
@@ -217,6 +357,7 @@ void handlePeripherals()
     successEffectActive = false;
   }
 
+  // Denied Beep Sequence (Rapid Beeps)
   if (deniedBeepState > 0 && (currentMillis - deniedBeepTimer >= deniedBeepInterval)) {
     deniedBeepTimer = currentMillis; 
     switch (deniedBeepState) {
@@ -230,6 +371,55 @@ void handlePeripherals()
     deniedBeepState++;
     if (deniedBeepState > 7) deniedBeepState = 0; 
   }
+
+  // Connection Success Sequence (Double Beep)
+  if (connectBeepState > 0 && (currentMillis - connectBeepTimer >= 100)) {
+       connectBeepTimer = currentMillis;
+       switch(connectBeepState) {
+           case 1: digitalWrite(BUZZER_PIN, BUZZER_ON); break; // Beep 1
+           case 2: digitalWrite(BUZZER_PIN, BUZZER_OFF); break; // Off
+           case 3: digitalWrite(BUZZER_PIN, BUZZER_ON); break; // Beep 2
+           case 4: digitalWrite(BUZZER_PIN, BUZZER_OFF); break; // Off
+       }
+       connectBeepState++;
+       if(connectBeepState > 4) connectBeepState = 0;
+  }
+
+  // WiFi Reset Button Logic (Hold 10s)
+  if (digitalRead(CONFIG_BUTTON_PIN) == LOW) {
+      if (!configButtonActive) {
+          configButtonActive = true;
+          configButtonTimer = millis();
+          Serial.println("Config Button Pressed...");
+      } else {
+          unsigned long duration = millis() - configButtonTimer;
+          if (duration > 10000) { // 10 Seconds
+              Serial.println("Resetting WiFi Settings...");
+              // Long Beep Indication
+              digitalWrite(BUZZER_PIN, BUZZER_ON); delay(200); digitalWrite(BUZZER_PIN, BUZZER_OFF); delay(100);
+              digitalWrite(BUZZER_PIN, BUZZER_ON); delay(200); digitalWrite(BUZZER_PIN, BUZZER_OFF); delay(100);
+              digitalWrite(BUZZER_PIN, BUZZER_ON); delay(1000); digitalWrite(BUZZER_PIN, BUZZER_OFF);
+              
+              wifimanager.reset();
+              ESP.restart();
+          }
+          // Optional: Beep every second to warn user? 
+          if(duration > 1000 && (duration / 1000) % 2 == 0) {
+             // mild warning tick could go here, but omitted to keep simple
+          }
+      }
+  } else {
+      configButtonActive = false;
+  }
+
+  // WiFi Connection Check & Reconnect
+  if (currentMillis - wifiCheckTimer >= wifiCheckInterval) {
+      wifiCheckTimer = currentMillis;
+      if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi Connection Lost or Not Connected. Attempting Reconnect...");
+          WiFi.reconnect();
+      }
+  }
 }
 
 // *** RESTORED LOGIN HANDLERS (Fix for Logout & Login Page) ***
@@ -237,12 +427,19 @@ void setup()
 {
   Serial.begin(115200);
   SPI.begin();
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_STA_PIN, OUTPUT);
+  pinMode(DOORLOCK_PIN, OUTPUT);
+  pinMode(READER_IN_RST_PIN, OUTPUT); // Configure Reader IN Reset Pin
+  pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP); // BOOT Button
+  digitalWrite(BUZZER_PIN, BUZZER_OFF);
+  digitalWrite(LED_STA_PIN, LED_STA_OFF);
+  digitalWrite(DOORLOCK_PIN, DOORLOCK_OFF);
+  digitalWrite(READER_IN_RST_PIN, HIGH); // Default HIGH (Run mode)
   initLittleFS();
   initWifi();
   configTime(3600 * timezone, daysavetime * 3600, "time.nist.gov", "0.pool.ntp.org", "1.pool.ntp.org");
   initTime();
-  initRFIDReader();
-
   initRFIDReader();
 
   // Log Startup with Reason
@@ -328,7 +525,21 @@ void setup()
   // Route for root / web page (SECURED)
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
       if(!checkUserWebAuth(request)) { request->redirect("/login"); return; }
-      request->send(200, "text/html", index_html); 
+      
+      // Template Processing
+      request->send(200, "text/html", index_html, [](const String& var) -> String {
+          if(var == "SETTINGS_SECTION") return String(settings_html); // Inject Settings
+          if(var == "TOOLS_SECTION") return String(tools_html); // Inject Tools
+          return String();
+      }); 
+  });
+
+  // Serve Static Assets from PROGMEM
+  server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(200, "text/css", style_css);
+  });
+  server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(200, "application/javascript", script_js);
   });
 
   // PROTECT VIEW ROUTES
@@ -367,6 +578,25 @@ void setup()
        request->send(200, "text/plain", "Logged Out");
   });
 
+  // API to get Reader Status
+  server.on("/api/readers", HTTP_GET, [](AsyncWebServerRequest *request) {
+       auto getVerStr = [](uint8_t v) {
+           String s = "0x" + String(v, HEX);
+           s.toUpperCase();
+           if(v == 0x92) s += " (v2.0)";
+           else if(v == 0x91) s += " (v1.0)";
+           else if(v == 0x90) s += " (v0.0)";
+           else if(v == 0x88) s += " (Clone)";
+           else s += " (Unknown)";
+           return s;
+       };
+       String json = "{";
+       json += "\"in\":\"" + getVerStr(mfrc522_in_version) + "\",";
+       json += "\"out\":\"" + getVerStr(mfrc522_out_version) + "\"";
+       json += "}";
+       request->send(200, "application/json", json);
+  });
+
   // Board Info
   server.on("/update/boardinfo", HTTP_GET, [](AsyncWebServerRequest *request) {
        long rssi = WiFi.RSSI();
@@ -377,6 +607,57 @@ void setup()
        String uptime = String(d) + "d " + String(h) + "h " + String(m) + "m " + String(s) + "s";
        String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>Board Info</title><style>body{font-family:sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.card{background:white;padding:2rem;border-radius:15px;box-shadow:0 4px 15px rgba(0,0,0,0.1);max-width:400px;width:90%}h2{margin-top:0;color:#333;text-align:center;border-bottom:2px solid #eee;padding-bottom:10px}.item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed #eee}.label{color:#666;font-weight:500}.val{font-weight:bold;color:#1a73e8}.btn{display:block;width:100%;padding:10px;text-align:center;background:#1a73e8;color:white;text-decoration:none;border-radius:8px;margin-top:20px;transition:0.3s}.btn:hover{background:#1557b0}</style></head><body><div class='card'><h2>ℹ️ Board Info</h2><div class='item'><span class='label'>Firmware Ver</span><span class='val'>1.0.0</span></div><div class='item'><span class='label'>Free Heap</span><span class='val'>" + String(freeHeap/1024) + " KB</span></div><div class='item'><span class='label'>Total Heap</span><span class='val'>" + String(totalHeap/1024) + " KB</span></div><div class='item'><span class='label'>Uptime</span><span class='val'>" + uptime + "</span></div><div class='item'><span class='label'>WiFi Signal</span><span class='val'>" + String(rssi) + " dBm</span></div><div class='item'><span class='label'>IP Address</span><span class='val'>" + WiFi.localIP().toString() + "</span></div><a href='/' class='btn' onclick='window.close()'>Close</a></div></body></html>";
        request->send(200, "text/html", html);
+  });
+
+  // Start Background Scan
+  server.on("/api/scan/start", HTTP_POST, [](AsyncWebServerRequest *request) {
+      if(isScanning) return request->send(200, "text/plain", "Busy");
+      
+      // Create Task
+      xTaskCreate(
+          scanTask,       /* Task function. */
+          "ScanTask",     /* String with name of task. */
+          4096,           /* Stack size in bytes. */
+          NULL,           /* Parameter passed as input of the task */
+          1,              /* Priority of the task. */
+          NULL);          /* Task handle. */
+          
+      request->send(200, "text/plain", "Started");
+  });
+
+  // Check Status
+  server.on("/api/scan/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+       // Return JSON with status
+       String json = "{";
+       json += "\"scanning\":" + String(isScanning ? "true" : "false") + ",";
+       json += "\"progress\":" + String(scanProgress) + ",";
+       json += "\"data\":" + scanResults;
+       json += "}";
+       request->send(200, "application/json", json);
+  });
+
+  // WS Server Status API
+  server.on("/api/ws/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+      if(!checkUserWebAuth(request)) return request->send(401);
+      
+      String json = "{";
+      json += "\"status\":\"Active\",";
+      json += "\"count\":" + String(ws.count());
+      json += "}";
+      request->send(200, "application/json", json);
+  });
+
+  // WS Broadcast API (For Remote Control)
+  server.on("/api/ws/broadcast", HTTP_POST, [](AsyncWebServerRequest *request) {
+      if(!checkUserWebAuth(request)) return request->send(401);
+      
+      String msg = request->hasParam("msg", true) ? request->getParam("msg", true)->value() : "";
+      if(msg.length() > 0) {
+          ws.textAll(msg);
+          request->send(200, "text/plain", "Sent: " + msg);
+      } else {
+          request->send(400, "text/plain", "Empty Message");
+      }
   });
 
   // --- API Action Handler (POST) - SECURED ---
@@ -400,7 +681,19 @@ void setup()
           operatorStr = "System/Bypass"; // Default for when MainKey System is disabled
       }
 
-      if(action == "clear_log") {
+      if(action == "rst_hardware") {
+           // Reset External Reader via GPIO
+           digitalWrite(READER_IN_RST_PIN, LOW);
+           delay(200);
+           digitalWrite(READER_IN_RST_PIN, HIGH);
+           request->send(200, "text/plain", "Hardware Reset Sent to Reader IN");
+      }
+      else if(action == "rst_self") {
+           request->send(200, "text/plain", "Restarting Main Unit...");
+           delay(500);
+           ESP.restart();
+      }
+      else if(action == "clear_log") {
           String type = request->hasParam("type", true) ? request->getParam("type", true)->value() : "";
           
           if(type == "reader") {
@@ -546,7 +839,16 @@ void setup()
   });
 
   server.serveStatic("/", LittleFS, "/");
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
   server.begin();
+
+  // Reset Reader IN when Main Unit is ready to ensure fresh connection
+  Serial.println("Main Unit Ready. Resetting Reader IN...");
+  digitalWrite(READER_IN_RST_PIN, LOW);
+  delay(500); 
+  digitalWrite(READER_IN_RST_PIN, HIGH);
+  Serial.println("Reader IN Reset Complete.");
 }
 
 void openDoor()
@@ -555,6 +857,7 @@ void openDoor()
   doorActive = true;
   doorTimer = millis();
   Serial.println("Door Unlocked");
+  ws.textAll("{\"type\":\"door_status\", \"status\":\"unlocked\"}");
 }
 
 int verifyUID(String uid, String &role, bool isExit) {
@@ -735,25 +1038,12 @@ bool isUserInside(String uid) {
    return false;
 }
 
-void updateUserState(String uid, int newState) {
-   upsertUser(LittleFS, "/user_state.txt", uid, uid + "," + String(newState));
-}
 
-void handleReader(int ID, MFRC522 &mfrc522)
-{
-  String uidString = "";
+
+void processScan(int ID, String uidString) {
   String role = "";
-  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
-    return;
-  }
-  delay(500);
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    uidString += String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
-    uidString += String(mfrc522.uid.uidByte[i], HEX);
-  }
-  uidString.toUpperCase();
+  long durationSec = 0; // Initialize duration variable
   Serial.print("[" + String(ID) + "] Card UID: ");
-  Serial.println(uidString);
   Serial.println(uidString);
 
   // --- ANTI-PASSBACK CHECK ---
@@ -766,6 +1056,9 @@ void handleReader(int ID, MFRC522 &mfrc522)
   // Pass isExit = true if Reader ID is OUT
   int permCode = verifyUID(uidString, tempRole, (ID == READER_OUT));
   
+  // ... inside processScan ...
+  String denyReason = "Access Denied"; // Default reason
+
   // If permission OK, check Direction Logic
   if (permCode == VERIFY_OK) {
       // MainKey bypasses Anti-Passback logic
@@ -779,8 +1072,9 @@ void handleReader(int ID, MFRC522 &mfrc522)
           if (ID == READER_IN) { // Tapping IN
                if (isInside) {
                    Serial.println("Anti-Passback: Already Inside!");
-                   currentCode = VERIFY_DENIED; // Or custom code?
-                   role = tempRole; // Log the role even if denied by logic
+                   currentCode = VERIFY_DENIED; 
+                   role = tempRole; 
+                   denyReason = "Already Inside"; // REASON: Anti-passback
                    // Beep Error
                    deniedBeepState = 1; deniedBeepTimer = millis();
                } else {
@@ -797,58 +1091,239 @@ void handleReader(int ID, MFRC522 &mfrc522)
                    allow = false; 
                    role = tempRole;
                    currentCode = VERIFY_DENIED;
+                   denyReason = "Already Outside"; // REASON: Anti-passback
                    deniedBeepState = 1; deniedBeepTimer = millis();
                } else {
                    allow = true; 
                    role = tempRole;
                    currentCode = VERIFY_OK;
+
+                   // --- CALCULATE DURATION BEFORE EXIING ---
+                   String stateLine = getUserDataFromFile(LittleFS, "/user_state.txt", uidString);
+                   // Line: "AABBCC,1,1712345678"
+                   if(stateLine.length() > 0) {
+                        int c1 = stateLine.indexOf(',');
+                        int c2 = stateLine.lastIndexOf(',');
+                        if(c2 > c1) {
+                            String tsStr = stateLine.substring(c2+1);
+                            time_t entryTime = tsStr.toInt();
+                            
+                            struct tm now;
+                            getLocalTime(&now, 0);
+                            time_t exitTime = mktime(&now);
+                            
+                            if(exitTime > entryTime && entryTime > 0) {
+                                durationSec = (long)difftime(exitTime, entryTime);
+                            }
+                        }
+                   }
+
                    updateUserState(uidString, STATE_OUTSIDE);
                    
                    // *** COUNT USAGE ON EXIT ONLY ***
-                   // "นับเข้าออกประตูโดยใบแตะเข้าและออกนับเป็น 1 ครั้ง" -> Count on OUT
                    updateUsageStats(LittleFS, "/usage_stats.txt", uidString);
                }
           }
       }
   } else {
       currentCode = permCode;
-      role = tempRole; // Role IS found (e.g. Unknown/Guest), but denied. We need to log it.
+      role = tempRole; 
+      // Map Verify Codes to Text
+      if(permCode == VERIFY_NOTFOUND) denyReason = "User Not Found";
+      else if(permCode == VERIFY_EXPIRED) denyReason = "Card Expired";
+      else if(permCode == VERIFY_INVALID) denyReason = "Time Invalid";
+      else if(permCode == VERIFY_LOGIN_FAIL) denyReason = "Login Failed";
+      else denyReason = "No Permission";
   }
 
-  // Override verifyUID's direct hardware control (It opens door inside verifyUID... wait)
-  // verifyUID() in previous code calls openDoor() directly! We need to Refactor verifyUID to NOT open door, only return status.
-  // OR we prevent verifyUID call? 
-  // Refactoring verifyUID is safer.
-  
-  // WAIT: My verifyUID logic above calls openDoor(). I need to change verifyUID to NOT open door.
-  // I will Modify verifyUID below.
-  
   if (allow) {
-      Serial.println("Access Permitted (Passback OK)");
+      Serial.println("Access Permitted");
       digitalWrite(BUZZER_PIN, BUZZER_ON); delay(200); digitalWrite(BUZZER_PIN, BUZZER_OFF);
       openDoor();
+
+      // --- BROADCAST TO WEBSOCKET DISPLAY ---
+      // Fetch User Details explicitly since they might not be in scope or passed in fully
+      String userDetails = getUserDataFromFile(LittleFS, "/users.txt", uidString);
+      
+      if (userDetails != "" && userDetails != String(FILE_ERR_NOTFOUND) && userDetails != String(FILE_ERR_OPEN)) {
+            // Helper to get Nth field
+            auto getField = [](String data, int index) -> String {
+                int found = 0;
+                int strIndex[] = {0, -1};
+                int maxIndex = data.length() - 1;
+                for (int i = 0; i <= maxIndex && found <= index; i++) {
+                    if (data.charAt(i) == ',' || i == maxIndex) {
+                        found++;
+                        strIndex[0] = strIndex[1] + 1;
+                        strIndex[1] = (i == maxIndex) ? i + 1 : i;
+                    }
+                }
+                return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
+            };
+            
+            String uPrefix = getField(userDetails, 2); // Prefix
+            String uName = getField(userDetails, 3); // Name EN
+            String uNameTH = getField(userDetails, 4); // Name TH
+            String uRole = getField(userDetails, 1); // Role
+            String uCode = getField(userDetails, 5); // Code
+            String uGender = getField(userDetails, 6); // Gender
+            String uAge = getField(userDetails, 7); // Age
+            String uExpire = getField(userDetails, 9); // Expire Date (Guest)
+            
+            // 1. Get Usage Count Helper
+            auto getUsageCount = [](fs::FS &fs, const char* path, String uid) -> int {
+                 File file = fs.open(path, "r");
+                 if(!file) return 0;
+                 int count = 0;
+                 while(file.available()) {
+                    String line = file.readStringUntil('\n');
+                    if(line.startsWith(uid + ",")) {
+                        int p1 = line.indexOf(',');
+                        if(p1 > 0) count = line.substring(p1+1).toInt();
+                        break;
+                    }
+                 }
+                 file.close();
+                 return count;
+            };
+            
+            // Fetch Count (Naive read)
+            int usageCount = getUsageCount(LittleFS, "/usage_stats.txt", uidString);
+
+            // Construct JSON
+            String wsJson = "{";
+            wsJson += "\"type\":\"scan_event\",";
+            wsJson += "\"reader\":" + String(ID) + ",";
+            wsJson += "\"uid\":\"" + uidString + "\",";
+            wsJson += "\"prefix\":\"" + uPrefix + "\",";
+            wsJson += "\"name\":\"" + uName + "\",";
+            wsJson += "\"name_th\":\"" + uNameTH + "\",";
+            wsJson += "\"role\":\"" + uRole + "\",";
+            wsJson += "\"code\":\"" + uCode + "\",";
+            wsJson += "\"gender\":\"" + uGender + "\",";
+            wsJson += "\"age\":\"" + uAge + "\",";
+            wsJson += "\"expire\":\"" + uExpire + "\","; // ADDED EXPIRE DATE
+            wsJson += "\"count\":" + String(usageCount) + ",";
+            wsJson += "\"duration\":" + String(durationSec); 
+            wsJson += "}";
+            
+            ws.textAll(wsJson);
+      }
+      
   } else {
-      Serial.println("Access Denied (Passback/Auth Fail)");
+      Serial.println("Access Denied");
+      
+       // Send Denied Event WITH REASON
+       String wsJson = "{";
+       wsJson += "\"type\":\"scan_deny\",";
+       wsJson += "\"reader\":" + String(ID) + ",";
+       wsJson += "\"uid\":\"" + uidString + "\",";
+       wsJson += "\"code\":" + String(currentCode) + ",";
+       wsJson += "\"msg\":\"" + denyReason + "\"";
+       wsJson += "}";
+       ws.textAll(wsJson);
   }
 
-  // Log format: ReaderID, UID, Role, Ref.Verify
-  // appendFile adds Date,Time automatically
   maintainLogFile(LittleFS, "/readerlogs.txt", "Date,Time,ReaderID,UID,Role,Ref.Verify");
   int sta = appendFile(LittleFS, "/readerlogs.txt", (String(ID) + "," + uidString + "," + role + "," + String(currentCode)).c_str());
 
   if (sta != FILE_OK) {
     Serial.printf("Failed to write to readerlogs.txt: %d\n", sta);
   }
+  
+  // Visual Feedback
   digitalWrite(LED_STA_PIN, LED_STA_ON);
-  delay(500);
+  delay(500); // Visual hold
   digitalWrite(LED_STA_PIN, LED_STA_OFF);
+}
+
+// Updated State Manager to handle Timestamp
+void updateUserState(String uid, int newState) {
+   struct tm tmstruct;
+   getLocalTime(&tmstruct, 0);
+   time_t now = mktime(&tmstruct);
+   
+   upsertUser(LittleFS, "/user_state.txt", uid, uid + "," + String(newState) + "," + String(now));
+}
+
+void handleReader(int ID, MFRC522 &mfrc522)
+{
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
+  // No delay here, handled in processScan or loop? Original had delay(500). 
+  // Let's rely on standard debouncing or just let it flow. 
+  // Original had delay(500) AFTER reading.
+  // We can put it after process.
+
+  String uidString = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    uidString += String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
+    uidString += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  uidString.toUpperCase();
+  
+  processScan(ID, uidString);
+
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
 }
 
+// Global to track Reader IN client ID
+uint32_t readerInClientId = 0;
+
+void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len){
+  if(type == WS_EVT_CONNECT){
+      Serial.printf("WS Client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      // Audible Notification (Double Beep via State Machine)
+      connectBeepState = 1; 
+      connectBeepTimer = millis();
+  }
+  else if(type == WS_EVT_DISCONNECT){
+      Serial.printf("WS Client #%u disconnected\n", client->id());
+      if(client->id() == readerInClientId) {
+          Serial.printf("Reader IN Disconnected! (Client ID: %u)\n", readerInClientId);
+          mfrc522_in_version = 0; // Reset version to indicate offline
+          readerInClientId = 0;
+          
+          // Broadcast Reader Status to Web
+          String wsJson = "{\"type\":\"reader_status\", \"status\":\"offline\", \"reader\":1}";
+          ws.textAll(wsJson);
+      }
+  }
+  else if(type == WS_EVT_DATA){
+    AwsFrameInfo * info = (AwsFrameInfo*)arg;
+    if(info->final && info->index == 0 && info->len == len){
+      String msg = "";
+      for(size_t i=0; i<len; i++) msg += (char)data[i];
+      
+      // Syntax: "UID:AABBCC" or just "AABBCC"
+      // Syntax: "VER:146" for version 0x92 (146)
+      if(msg.startsWith("VER:")) {
+          mfrc522_in_version = msg.substring(4).toInt();
+          readerInClientId = client->id(); // Register this client as Reader IN
+          Serial.printf("Reader IN Connected! Client ID: %u\n", readerInClientId);
+          
+          // Broadcast Reader Status to Web
+          String wsJson = "{\"type\":\"reader_status\", \"status\":\"online\", \"reader\":1}";
+          // Don't send back to the reader itself, only to browsers? Or just textAll (reader will ignore)
+          ws.textAll(wsJson);
+      }
+      else {
+          if(msg.startsWith("UID:")) msg = msg.substring(4);
+          msg.trim();
+          msg.toUpperCase();
+          if(msg.length() > 0) processScan(READER_IN, msg);
+      }
+    }
+  }
+
+}
+
 void loop()
 {
+  ws.cleanupClients();
   handlePeripherals();
-  handleReader(READER_IN, mfrc522_IN);
+  // handleReader(READER_IN, mfrc522_IN); // Handled by WS
   handleReader(READER_OUT, mfrc522_OUT);
 }

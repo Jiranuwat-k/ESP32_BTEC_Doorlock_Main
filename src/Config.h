@@ -16,10 +16,11 @@
  */
 #define RST_PIN       4          // Configurable, see typical pin layout above
 #define SS_PIN        5         // Configurable, see typical pin layout above
-#define SS2_PIN       33
 #define LED_STA_PIN   2
 #define BUZZER_PIN    13
 #define DOORLOCK_PIN  27
+#define READER_IN_RST_PIN 17 // Pin to RST of Reader IN ESP32
+#define CONFIG_BUTTON_PIN 0  // Boot Button for resetting WiFi
 #define ESPASYNCHTTPUPDATESERVER_LITTLEFS
 // Define buzzer and doorlock states
 // Assuming active LOW for buzzer
@@ -88,6 +89,6 @@ const char* Role_Unknown        = "00"; // unknown UID
 
 // Feature Toggles
 const bool AUTO_CLEANUP_EXPIRED_GUESTS = false; // Set to true to enable auto-deletion of expired guests
-const bool ENABLE_MAINKEY_SYSTEM = false; // Set to false to allow Admin creation without MainKey
+const bool ENABLE_MAINKEY_SYSTEM = true; // Set to false to allow Admin creation without MainKey
 
 #endif
