@@ -13,61 +13,56 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
   <body>
     <div class="toast-container" id="toast-container"></div>
 
-    <nav>
-      <div class="nav-container">
-        <a href="#" class="brand" onclick="switchPage('dashboard')"
-          ><span style="font-size: 1.5rem">🔐</span> AdminPanel</a
-        >
-        <ul class="nav-menu">
-          <li
-            class="nav-item active"
-            onclick="switchPage('dashboard')"
-            id="nav-dashboard"
-          >
-            <span>📄</span> Reader Log
-          </li>
-          <li
-            class="nav-item"
-            onclick="switchPage('userslog')"
-            id="nav-userslog"
-          >
-            <span>📝</span> User Log
-          </li>
-          <li class="nav-item" onclick="switchPage('manage')" id="nav-manage">
-            <span>👤</span> Members
-          </li>
-          <li class="nav-item" onclick="switchPage('add')" id="nav-add">
-            <span>➕</span> Add/Edit
-          </li>
-          <li class="nav-item" onclick="switchPage('system')" id="nav-system">
-            <span>⚙️</span> System Logs
-          </li>
-          <li class="nav-item" onclick="switchPage('settings')" id="nav-settings">
-            <span>🔧</span> Settings
-          </li>
-          <li class="nav-item" onclick="switchPage('usage')" id="nav-usage">
-            <span>📈</span> Stats
-          </li>
-          <li class="nav-item" onclick="switchPage('tools')" id="nav-tools">
-            <span>🛠️</span> Tools
-          </li>
-        </ul>
-        <div class="profile-menu" id="auth-info" style="display:none">
-             <div class="profile-btn" onclick="toggleProfileDropdown()">
-                <span id="profile-initials">G</span>
-             </div>
-             <div class="profile-dropdown" id="profile-dropdown">
-                 <div class="profile-avatar-lg" id="profile-avatar-lg">G</div>
-                 <div class="profile-name" id="profile-name">Guest</div>
-                 <div class="profile-uid" id="profile-uid">Not Logged In</div>
-                 <div class="profile-actions">
-                    <button id="btn-login-card" onclick="startLoginFlow()" class="btn-logout-google">Login Card</button>
-                    <button onclick="showLogoutModal()" class="btn-logout-google">Sign out</button>
-                 </div>
-             </div>
+    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+    <!-- Sidebar Menu -->
+    <div class="sidebar" id="sidebar">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+        <a href="#" class="brand" onclick="switchPage('dashboard'); toggleSidebarIfMobile();"><span style="font-size: 1.5rem">🔐</span>BTEC Admin</a>
+      </div>
+      
+      <ul class="nav-menu">
+        <div class="nav-group-title">Analytics & Logs</div>
+        <li class="nav-item active" onclick="switchPage('dashboard'); toggleSidebarIfMobile();" id="nav-dashboard"><span>📄</span> Reader Log</li>
+        <li class="nav-item" onclick="switchPage('userslog'); toggleSidebarIfMobile();" id="nav-userslog"><span>📝</span> User Log</li>
+        <li class="nav-item" onclick="switchPage('usage'); toggleSidebarIfMobile();" id="nav-usage"><span>📈</span> Stats</li>
+
+        <div class="nav-group-title">Access Control</div>
+        <li class="nav-item" onclick="switchPage('manage'); toggleSidebarIfMobile();" id="nav-manage"><span>👤</span> Members</li>
+        <li class="nav-item" onclick="switchPage('add'); toggleSidebarIfMobile();" id="nav-add"><span>➕</span> Enroll User</li>
+
+        <div class="nav-group-title">System & Config</div>
+        <li class="nav-item" onclick="switchPage('settings'); toggleSidebarIfMobile();" id="nav-settings"><span>⚙️</span> Settings</li>
+        <li class="nav-item" onclick="switchPage('system'); toggleSidebarIfMobile();" id="nav-system"><span>📋</span> System Logs</li>
+        <li class="nav-item" onclick="switchPage('tools'); toggleSidebarIfMobile();" id="nav-tools"><span>🛠️</span> Diagnostics</li>
+
+        <div class="nav-group-title">Export & Maintenance</div>
+        <li class="nav-item" onclick="window.location.href='/update'"><span>☁️</span> Update FW</li>
+        <li class="nav-item" onclick="window.location.href='/update/boardinfo'"><span>ℹ️</span> Board Info</li>
+        <li class="nav-item" onclick="exportCurrentTable('csv'); toggleSidebarIfMobile();"><span>💾</span> Export CSV</li>
+        <li class="nav-item" onclick="exportCurrentTable('xls'); toggleSidebarIfMobile();"><span>📊</span> Export Excel</li>
+      </ul>
+    </div>
+
+    <!-- Top Navigation Container -->
+    <div class="top-nav">
+      <button class="hamburger" onclick="toggleSidebar()">☰</button>
+      
+      <div class="profile-menu" id="auth-info" style="display:none">
+        <div class="profile-btn" onclick="toggleProfileDropdown()">
+          <span id="profile-initials">G</span>
+        </div>
+        <div class="profile-dropdown" id="profile-dropdown">
+          <div class="profile-avatar-lg" id="profile-avatar-lg">G</div>
+          <div class="profile-name" id="profile-name">Guest</div>
+          <div class="profile-uid" id="profile-uid">Not Logged In</div>
+          <div class="profile-actions">
+            <button id="btn-login-card" onclick="startLoginFlow()" class="btn-logout-google">Login Card</button>
+            <button onclick="showLogoutModal()" class="btn-logout-google">Sign out</button>
+          </div>
         </div>
       </div>
-    </nav>
+    </div>
     <div class="container">
       <!-- PAGES -->
       <div id="page-dashboard" class="page active">
@@ -152,14 +147,15 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
               <thead>
                 <tr>
                   <th>Action</th>
-                  <th>Time</th>
-                  <th>Target UID</th>
-                  <th>By</th>
+                  <th>Date & Time</th>
+                  <th>Target Profile</th>
+                  <th>Managed By</th>
+                  <th>Activity Details</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td colspan="4" class="empty-state">Loading...</td>
+                  <td colspan="5" class="empty-state">Loading...</td>
                 </tr>
               </tbody>
             </table>
@@ -219,7 +215,7 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
           >
             <h2 style="color: white; margin: 0">📊 Total Access Count</h2>
             <div style="text-align: right">
-              <strong style="font-size: 2rem" id="total-access-count">0</strong>
+              <strong style="font-size: 2.2rem" id="total-access-count">0</strong>
             </div>
           </div>
         </div>
@@ -265,7 +261,7 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
             <h2 id="form-title">➕ Add New User</h2>
             <button class="btn btn-sm" onclick="clearForm()">↺ Reset</button>
           </div>
-          <form onsubmit="return validateForm()">
+          <form onsubmit="event.preventDefault(); validateForm();">
             <div class="form-group">
               <label>UID / Card ID</label>
               <div style="display: flex; gap: 10px">
@@ -297,6 +293,7 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
                   <option value="10">User (Standard)</option>
                   <option value="50">Admin</option>
                   <option value="01">Guest (Time Limited)</option>
+                  <option value="90">SecondaryKey (MainKey Privilege)</option>
                 </select>
               </div>
               <div class="form-group">
@@ -382,13 +379,16 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
                 </div>
               </div>
             </div>
-            <button
-              type="submit"
-              class="btn btn-primary btn-full"
-              id="btn-save"
-            >
-              💾 Save User
-            </button>
+            <div style="margin-top: 25px;">
+              <button
+                type="submit"
+                class="btn btn-primary"
+                id="btn-save"
+                style="padding: 16px; font-size: 1.1rem; width: 100%; box-shadow: 0 4px 12px rgba(24, 119, 242, 0.2);"
+              >
+                💾 Save User
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -434,28 +434,12 @@ const char index_html[] PROGMEM = R"=====(<!DOCTYPE html>
 
     </div>
 
-    <!-- FLOATING ACTION BUTTON -->
-    <div class="fab-container" id="fab">
-      <div class="fab-menu">
-        <!-- can use target="_blank" -->
-        <a href="/update" class="fab-item">☁️ Update FW</a>
-        <a href="/update/boardinfo" class="fab-item">ℹ️ Board Info</a>
-        <a href="#" class="fab-item" onclick="exportCurrentTable('csv'); return false;">💾 Export CSV</a>
-        <a href="#" class="fab-item" onclick="exportCurrentTable('xls'); return false;">📊 Export Excel</a>
-      </div>
-      <button
-        class="fab-main"
-        onclick="document.getElementById('fab').classList.toggle('active')"
-      >
-        ⚡
-      </button>
-    </div>
 
     <!-- AUTH MODAL -->
     <div id="auth-modal" class="modal">
       <div class="modal-content">
         <h2 style="margin-bottom: 10px">Security Check</h2>
-        <p style="color: var(--text-secondary)">
+        <p id="auth-help-msg" style="color: var(--text-secondary)">
           This action requires authorization.<br />Please scan <b>Admin</b> or
           <b>MainKey</b>.
         </p>

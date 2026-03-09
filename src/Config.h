@@ -31,9 +31,10 @@
 #define DOORLOCK_OFF  LOW
 #define LED_STA_ON        HIGH
 #define LED_STA_OFF       LOW
-// HTTP Auth Credentials
-const char *http_username = "Admin";
-const char *http_password = "Admin";
+// System Auth Credentials & Settings
+extern String sys_username;
+extern String sys_password;
+extern bool sys_antipassback;
 // Timezone and Daylight Saving Time settings
 long timezone = 7;
 byte daysavetime = 0;
@@ -50,11 +51,14 @@ byte daysavetime = 0;
 #define LittleFS_ERR_OK            0
 #define LittleFS_ERR_MOUNT        -1
 // VerifyUID return codes
-// *** MAINKEY HARDCODED UID ***
-// Replace this with your actual Main Key UID
-const String MAIN_KEY_UID = "047318E8360289"; 
+// *** MAINKEY HARDCODED UIDs (Up to 3 cards) ***
+// Replace these with your actual Main Key UIDs. Leave empty strings ("") if not used.
+const String MAIN_KEY_UID_1 = "047318E8360289";
+const String MAIN_KEY_UID_2 = "";
+const String MAIN_KEY_UID_3 = "";
 
 const char* Role_MainKey        = "99"; // Master key with all permissions & generate other keys (Stored in code only)
+const char* Role_SecondaryKey   = "90"; // Same privileges as MainKey, but can be added via web UI
 const char* Role_Admin          = "50"; // Full access to manage users & generate User/Guest keys
 const char* Role_User           = "10"; // Regular access
 const char* Role_Guest          = "01"; // One time access

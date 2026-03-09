@@ -23,11 +23,22 @@ const char script_js[] PROGMEM = R"=====(
 
       let pendingAction = null;
       let pollInterval = null;
+      let currentUserIsSuper = false;
+      let isElevatedSession = false;
       async function postAction(action, params = {}) {
         const formData = new FormData();
         formData.append("action", action);
         for (const k in params) formData.append(k, params[k]);
+        
+        const btnSave = document.getElementById("btn-save");
+        const originalBtnHtml = btnSave ? btnSave.innerHTML : "";
+
         try {
+          if(action === "save_user" && btnSave) {
+              btnSave.disabled = true;
+              btnSave.innerHTML = "Processing...";
+          }
+
           const res = await fetch("/api/action", {
             method: "POST",
             body: formData,
@@ -38,7 +49,12 @@ const char script_js[] PROGMEM = R"=====(
               window.location.reload(); // Web session expired
             else {
               pendingAction = { action, params };
-              startLoginFlow();
+              // Check if we need Super MainKey
+              let needsSuper = false;
+              if (action === "save_user" && (params.role === "50" || params.role === "90" || params.role === "99")) {
+                  needsSuper = true;
+              }
+              startLoginFlow(needsSuper);
             } // Card auth needed
             return;
           }
@@ -62,10 +78,25 @@ const char script_js[] PROGMEM = R"=====(
         } catch (e) {
           console.error(e);
           showToast("Network Error", "error");
+        } finally {
+            if(action === "save_user" && btnSave) {
+                btnSave.disabled = false;
+                btnSave.innerHTML = originalBtnHtml;
+            }
         }
       }
-      async function startLoginFlow() {
+      async function startLoginFlow(isRestricted = false) {
         document.getElementById("auth-modal").style.display = "flex";
+        
+        const msgEl = document.getElementById("auth-help-msg");
+        if(msgEl) {
+             if(isRestricted) {
+                 msgEl.innerHTML = "This action requires <b>MainKey</b> privileges.<br>Please scan your <b>MainKey</b>.";
+             } else {
+                 msgEl.innerHTML = "This action requires authorization.<br>Please scan <b>Admin</b> or <b>MainKey</b>.";
+             }
+        }
+
         document.getElementById("scan-status").innerText =
           "Starting reader mode...";
         await fetch("/api/login/wait", { method: "POST" });
@@ -79,9 +110,18 @@ const char script_js[] PROGMEM = R"=====(
             if (data.status === "logged_in") {
               clearInterval(pollInterval);
               document.getElementById("auth-modal").style.display = "none";
-              updateAuthUI(data.uid);
+              updateAuthUI(data.uid, data.is_super);
               if (pendingAction) {
-                postAction(pendingAction.action, pendingAction.params);
+                if (pendingAction.action === "_custom_save_settings" || pendingAction.action === "_custom_save_apb") {
+                      // Re-submit logic:
+                      const actionMap = {
+                          "_custom_save_settings": saveSystemSettings,
+                          "_custom_save_apb": saveAntiPassback
+                      };
+                      actionMap[pendingAction.action]();
+                } else {
+                      postAction(pendingAction.action, pendingAction.params);
+                }
                 pendingAction = null;
               }
             }
@@ -133,13 +173,21 @@ const char script_js[] PROGMEM = R"=====(
         window.location.href = "/logout";
       }
 
-      async function checkLoginStatus() {
-        try {
-          const res = await fetch("/api/login/status");
-          const data = await res.json();
-          updateAuthUI(data.uid);
-        } catch (e) {}
-      }
+       async function checkLoginStatus() {
+         try {
+           const res = await fetch("/api/login/status");
+           if (res.status === 401) {
+             window.location.href = "/login";
+             return;
+           }
+           const data = await res.json();
+           currentUserIsSuper = data.is_super || false;
+           updateAuthUI(data.uid, currentUserIsSuper);
+         } catch (e) {
+             // If fetch fails, it might be a temporary network issue or device rebooting
+             console.log("Session check failed, possible reboot...");
+         }
+       }
       function toggleProfileDropdown() {
           const dd = document.getElementById("profile-dropdown");
           dd.classList.toggle("show");
@@ -157,7 +205,7 @@ const char script_js[] PROGMEM = R"=====(
           }
       }
 
-      function updateAuthUI(uidDisplay) {
+      function updateAuthUI(uidDisplay, isSuper = false) {
         const div = document.getElementById("auth-info");
         
         // Always show
@@ -208,6 +256,37 @@ const char script_js[] PROGMEM = R"=====(
         document.getElementById("profile-name").innerText = role;
         document.getElementById("profile-uid").innerText = formatUID(uid);
 
+         // Access Control for User Enrollment
+         const roleSelect = document.getElementById("role");
+         const btnSave = document.getElementById("btn-save");
+         isElevatedSession = (uidDisplay && uidDisplay !== ""); // Either Card Scanned or Developer Logged In
+         
+         if(roleSelect) {
+              const options = roleSelect.options;
+              for(let i=0; i<options.length; i++) {
+                  const val = options[i].value;
+                  
+                  if (!isElevatedSession) {
+                      // Case 1: No Admin access at all
+                      options[i].disabled = true;
+                  } 
+                  else if (!isSuper && (val === "50" || val === "90" || val === "99")) {
+                      // Case 2: Admin/SecondaryKey elevation but not MainKey
+                      options[i].disabled = true;
+                  } 
+                  else {
+                      // Case 3: Proper Permission
+                      options[i].disabled = false;
+                  }
+              }
+         }
+
+         if(btnSave) {
+             btnSave.disabled = !isElevatedSession;
+             btnSave.style.opacity = isElevatedSession ? "1" : "0.5";
+             btnSave.style.cursor = isElevatedSession ? "pointer" : "not-allowed";
+         }
+
         const btnLogin = document.getElementById("btn-login-card");
         if(btnLogin) {
              if(!uidDisplay || uidDisplay === "") {
@@ -218,6 +297,9 @@ const char script_js[] PROGMEM = R"=====(
         }
       }
       function switchPage(pageId) {
+        // Save to localStorage
+        localStorage.setItem("activePage", pageId);
+
         document
           .querySelectorAll(".nav-item")
           .forEach((el) => el.classList.remove("active"));
@@ -232,13 +314,37 @@ const char script_js[] PROGMEM = R"=====(
         if (pageId === "usage") loadUsageStats();
         if (pageId === "manage") loadMembers();
         if (pageId === "system") loadSystemLog();
-        if (pageId === "add") loadUnknownUIDs();
+        if (pageId === "settings") loadWsServerStatus();
+        if (pageId === "add") {
+            loadUnknownUIDs();
+            if (!isElevatedSession) {
+                setTimeout(() => startLoginFlow(), 500); // Slight delay for page transition
+            }
+        }
       }
+
+      function toggleSidebar() {
+          const sb = document.getElementById('sidebar');
+          const ov = document.getElementById('sidebar-overlay');
+          if(sb) sb.classList.toggle('open');
+          if(ov) ov.classList.toggle('open');
+      }
+
+      function toggleSidebarIfMobile() {
+          if(window.innerWidth <= 768) {
+              const sb = document.getElementById('sidebar');
+              const ov = document.getElementById('sidebar-overlay');
+              if(sb) sb.classList.remove('open');
+              if(ov) ov.classList.remove('open');
+          }
+      }
+
       const roleMap = {
         10: "User",
         50: "Admin",
         "01": "Guest",
         99: "MainKey",
+        90: "SecondaryKey",
         "00": "Unknown",
       };
       const verifyMap = {
@@ -352,6 +458,12 @@ const char script_js[] PROGMEM = R"=====(
           M: '<span class="badge bg-warning">Modified</span>',
           D: '<span class="badge bg-danger">Deleted</span>',
         };
+        const pMap = { 
+          "10": {en:"Mr.", th:"นาย"}, "11": {en:"Ms.", th:"นางสาว"}, "12": {en:"Mrs.", th:"นาง"}, 
+          "13": {en:"Miss", th:"นางสาว"}, "20": {en:"Dr.", th:"ดร."}, "30": {en:"Teacher", th:"อาจารย์"}, 
+          "40": {en:"Student", th:"นักเรียน"}, "41": {en:"Uni. Student", th:"นักศึกษา"}, "XX": {en:"", th:""} 
+        };
+        const gMap = { "1":"Male", "2":"Female", "X":"Other" };
         try {
           const [logRes, userMap] = await Promise.all([
               fetch("view-userslog?r=" + Math.random()),
@@ -365,18 +477,70 @@ const char script_js[] PROGMEM = R"=====(
             if (c.length < 5) return;
             
             // Operator might be system/admin
-            let operator = c[3];
-            if(userMap[c[3]]) operator = formatUserInfo(c[3], userMap);
-            else if (roleMap[c[3]]) operator = roleMap[c[3]]; // Plain role if no user found
+            // Operator styling
+            let op = (c[3] || "").replace(/\(|\)/g, "");
+            let opBadge = op.replace("DEVELOPER", '<span class="badge" style="background:#5b21b6; color:white">DEV</span>')
+                            .replace("MainKey", '<span class="badge" style="background:#6366f1; color:white">MAINKEY</span>');
+            if(opBadge === op) opBadge = `<span class="badge" style="background:#3b82f6; color:white">ADMIN</span>`;
+
+            // Snapshot Parsing
+            let snap = c[5] || "-";
+            let nameEN_disp = snap, nameTH_disp = "", subInfoHtml = "";
+            if(snap.includes("[")) {
+                try {
+                    const mTitle = snap.match(/\[(.*?)\]/);
+                    const pEntry = mTitle ? pMap[mTitle[1]] : null;
+                    const preEN = pEntry ? pEntry.en : "";
+                    const preTH = pEntry ? pEntry.th : "";
+                    
+                    const mNames = snap.match(/\] (.*?) \((.*?)\)/);
+                    const nameEN = mNames ? mNames[1] : "";
+                    const nameTH = mNames ? mNames[2] : "";
+                    const mID = snap.match(/ID:(.*?) Age/);
+                    const idVal = mID ? mID[1].trim() : "";
+                    const mAge = snap.match(/Age:(.*?) Sex/);
+                    const ageVal = mAge ? mAge[1].trim() : "";
+                    const mSex = snap.match(/Sex:(.*?)$/);
+                    const sexCode = mSex ? mSex[1].trim() : "";
+                    const sexVal = gMap[sexCode] || sexCode;
+
+                    nameEN_disp = (preEN ? preEN + " " : "") + nameEN;
+                    nameTH_disp = (preTH ? preTH : "") + nameTH;
+                    
+                    subInfoHtml = `
+                        <span class="badge" style="background:#f8fafc; color:#475569; border:1px solid #e2e8f0; font-size:0.75rem; font-weight:600">ID: ${idVal}</span>
+                        <span class="badge" style="background:#f8fafc; color:#475569; border:1px solid #e2e8f0; font-size:0.75rem; font-weight:600">AGE: ${ageVal}</span>
+                        <span class="badge" style="background:#f8fafc; color:#475569; border:1px solid #e2e8f0; font-size:0.75rem; font-weight:600">${sexVal.toUpperCase()}</span>
+                    `;
+                } catch(err) {}
+            }
+
+            // Details
+            let det = c[6] || "-";
+            let detHtml = det;
+            if(det.includes("Changed:")) {
+                const fields = det.replace("Changed:", "").trim().split(" ");
+                detHtml = `<div style="margin-bottom:4px; font-size:0.75rem; color:#64748b; font-weight:700">CHANGES:</div>`;
+                fields.forEach(f => { if(f) detHtml += `<span class="badge" style="background:#f1f5f9; color:#334155; border:1px solid #e2e8f0; margin-right:4px; margin-bottom:4px; font-size:0.7rem; font-weight:700;">${f.toUpperCase()}</span>`; });
+            } else if (det === "Initial Create") detHtml = `<div style="color:#059669; font-weight:700; font-size:0.85rem">NEW ENROLLMENT</div>`;
+            else if (det === "User Deleted") detHtml = `<div style="color:#dc2626; font-weight:700; font-size:0.85rem">REMOVED</div>`;
             
             html += `<tr>
                 <td>${map[c[2]] || c[2]}</td>
-                <td>${c[0]} <small>${c[1]}</small></td>
-                <td>${formatUserInfo(c[4], userMap)}</td>
-                <td>${operator}</td>
+                <td style="white-space:nowrap; font-weight:600">${c[1]}<br><small style="color:#64748b">${c[0]}</small></td>
+                <td>
+                   <div style="font-weight:700; font-size:1.05rem; color:#0f172a">${nameEN_disp}</div>
+                   <div style="font-size:0.9rem; color:#64748b; margin-bottom:4px">${nameTH_disp}</div>
+                   <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px">
+                       ${subInfoHtml}
+                       <span style="color:#94a3b8; font-size:0.75rem; font-family:monospace; margin-left:4px">${formatUID(c[4])}</span>
+                   </div>
+                </td>
+                <td>${opBadge}</td>
+                <td style="max-width:200px; vertical-align:top; border-left:none; padding-left:12px">${detHtml}</td>
             </tr>`;
           });
-          document.querySelector("#table-userslog tbody").innerHTML = html || '<tr><td colspan="4" class="empty-state">No logs found</td></tr>';
+           document.querySelector("#table-userslog tbody").innerHTML = html || '<tr><td colspan="5" class="empty-state">No logs found</td></tr>';
         } catch (e) {}
       }
 
@@ -426,6 +590,62 @@ const char script_js[] PROGMEM = R"=====(
         } catch (e) {}
       }
 
+      async function loadSystemSettings() {
+          try {
+              const res = await fetch("/api/settings/get");
+              if (!res.ok) return;
+              const data = await res.json();
+              document.getElementById("set-username").value = data.sys_username || "";
+              document.getElementById("set-password").value = "";
+              document.getElementById("set-antipassback").value = data.sys_antipassback ? "true" : "false";
+          } catch(e) {}
+      }
+
+      async function saveSystemSettings() {
+          const user = document.getElementById("set-username").value;
+          const pass = document.getElementById("set-password").value;
+          
+          if (!user) { showToast("Username cannot be empty", "error"); return; }
+          
+          const formData = new FormData();
+          formData.append("sys_username", user);
+          if (pass) formData.append("sys_password", pass);
+
+          try {
+              const res = await fetch("/api/settings/save", { method: "POST", body: formData });
+              if (res.ok) {
+                  showToast("Login Credentials Updated", "success");
+              } else if (res.status === 401) {
+                  pendingAction = { action: "_custom_save_settings", params: formData };
+                  startLoginFlow();
+              } else {
+                  showToast(await res.text(), "error");
+              }
+          } catch(e) {
+              showToast("Network Error", "error");
+          }
+      }
+
+      async function saveAntiPassback() {
+          const apb = document.getElementById("set-antipassback").value;
+          const formData = new FormData();
+          formData.append("sys_antipassback", apb);
+
+          try {
+              const res = await fetch("/api/settings/save", { method: "POST", body: formData });
+              if (res.ok) {
+                  showToast("Anti-Passback Setting Updated", "success");
+              } else if (res.status === 401) {
+                  pendingAction = { action: "_custom_save_apb", params: formData };
+                  startLoginFlow();
+              } else {
+                  showToast(await res.text(), "error");
+              }
+          } catch(e) {
+              showToast("Network Error", "error");
+          }
+      }
+
       async function loadMembers() {
         try {
           const userMap = await fetchUserMap(); // Use shared fetch
@@ -457,18 +677,27 @@ const char script_js[] PROGMEM = R"=====(
               }
             }
             
-            html += `<tr>
-                <td>${formatUserInfo(c[0], userMap)}</td>
-                <td>${roleMap[c[1]] || c[1]}</td>
-                <td>${guestInfo}</td>
-                <td>
+             let actions = "";
+             // Role logic: SecondaryKey (90) and MainKey (99) and Admin (50) protected
+             const isSensitiveRole = (c[1] === "90" || c[1] === "99" || c[1] === "50");
+             
+             if (!isSensitiveRole || currentUserIsSuper) {
+                 actions = `
                     <button class="btn btn-sm btn-primary" onclick='editUser(${inputs})'>✏️</button> 
-                    <button class="btn btn-sm btn-danger" onclick="deleteUser('${c[0]}')">🗑️</button>
-                </td>
-            </tr>`;
-          });
-          document.querySelector("#table-users tbody").innerHTML = html || '<tr><td colspan="4" class="empty-state">No members found</td></tr>';
-        } catch (e) {}
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser('${c[0]}')">🗑️</button>`;
+             } else {
+                 actions = `<span class="badge bg-dark">Protected</span>`;
+             }
+             
+             html += `<tr>
+                 <td>${formatUserInfo(c[0], userMap)}</td>
+                 <td>${roleMap[c[1]] || c[1]}</td>
+                 <td>${guestInfo}</td>
+                 <td>${actions}</td>
+             </tr>`;
+           });
+           document.querySelector("#table-users tbody").innerHTML = html || '<tr><td colspan="4" class="empty-state">No members found</td></tr>';
+         } catch (e) {}
       }
       async function loadUnknownUIDs() {
         try {
@@ -665,10 +894,13 @@ ${clone.outerHTML}
            postAction("delete_user", { uid: uid });
         });
       }
-      function validateForm() {
-        const form = document.querySelector("form");
+      async function validateForm() {
+        const uidInput = document.getElementById("uid");
+        const uid = uidInput.value.trim();
+        if(!uid) { showToast("UID is required", "error"); return; }
+
         const data = {
-          uid: document.getElementById("uid").value,
+          uid: uid,
           role: document.getElementById("role").value,
           prefix: document.getElementById("prefix").value,
           fname_en: document.getElementById("fname_en").value,
@@ -679,13 +911,30 @@ ${clone.outerHTML}
           start_date: document.getElementById("start_date").value,
           end_date: document.getElementById("end_date").value,
         };
+
+        // If in "Add" mode (UID is editable), check for existing user
+        if(!uidInput.readOnly) {
+            try {
+                const userMap = await fetchUserMap();
+                if(userMap[uid]) {
+                    showConfirm(`Warning: UID ${uid} is already registered to ${userMap[uid].nameEN}. Overwrite this user?`, function() {
+                        postAction("save_user", data);
+                    });
+                    return;
+                }
+            } catch(e) {}
+        }
+
         postAction("save_user", data);
-        return false;
       }
       const params = new URLSearchParams(window.location.search);
+      const savedPage = localStorage.getItem("activePage");
       if (params.has("uid")) {
         switchPage("add");
         document.getElementById("uid").value = params.get("uid");
+      } else if (savedPage) {
+        switchPage(savedPage);
+        checkLoginStatus();
       } else {
         switchPage("dashboard");
         checkLoginStatus();
@@ -950,7 +1199,7 @@ ${clone.outerHTML}
       }
       
       async function sendRemoteCmd(cmd) {
-         if(!confirm("Send '" + cmd + "' to all connected readers?")) return;
+         if(!confirm("Are you sure you want to send: " + cmd + " to all connected readers?")) return;
          try {
              const res = await fetch("/api/ws/broadcast", {
                  method: "POST",
@@ -1049,33 +1298,29 @@ ${clone.outerHTML}
          } catch(e) { console.error("WS Stat error", e); }
       }
 
-      function switchPage(pageId) {
-          document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
-          document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-          
-          const pageEl = document.getElementById('page-' + pageId);
-          if(pageEl) pageEl.classList.add('active');
-          
-          const navEl = document.getElementById('nav-' + pageId);
-          if(navEl) navEl.classList.add('active');
-          
-          if(pageId === 'dashboard') { loadReaderStatus(); loadReaderLog(); }
-          if(pageId === 'userslog') loadUserLog();
-          if(pageId === 'manage') loadMembers();
-          if(pageId === 'system') loadSystemLog();
-          if(pageId === 'usage') loadUsageStats();
-          if(pageId === 'settings') loadWsServerStatus();
-          
-          // Close mobile menu if open (optional assumption)
+      function toggleProfileDropdown() {
+          const dd = document.getElementById("profile-dropdown");
+          if(dd) {
+              dd.classList.toggle("show");
+          }
       }
 
       // Start WS
       window.addEventListener('load', () => {
           initWebSocket(false);
-          // Initial Load
-          if(document.getElementById('page-dashboard').classList.contains('active')) {
-              loadReaderStatus();
-              loadReaderLog();
+          
+          const params = new URLSearchParams(window.location.search);
+          const savedPage = localStorage.getItem("activePage");
+          
+          if (params.has("uid")) {
+              switchPage("add");
+              document.getElementById("uid").value = params.get("uid");
+          } else if (savedPage) {
+              switchPage(savedPage);
+          } else {
+              switchPage("dashboard");
           }
-      });
+           checkLoginStatus();
+           setInterval(checkLoginStatus, 10000); // Polling every 10 seconds
+       });
 )=====";

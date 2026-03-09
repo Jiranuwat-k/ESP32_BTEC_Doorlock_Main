@@ -52,11 +52,12 @@ const char tools_html[] PROGMEM = R"=====(
                      Commands are broadcasted to all connected clients (e.g. Reader IN).
                 </div>
                 <div style="display:flex; gap:10px;">
-                    <button class="btn btn-danger btn-sm" onclick="sendRemoteCmd('rst ESP')">⚡ Restart ESP</button>
-                    <button class="btn btn-warning btn-sm" onclick="sendRemoteCmd('rst rc522')">🔄 Restart RC522</button>
+                    <button class="btn btn-danger btn-sm" onclick="sendRemoteCmd('rst ESP')">⚡ Restart ESP ReaderIN Online</button>
+                    <button class="btn btn-warning btn-sm" onclick="sendRemoteCmd('rst rc522')">🔄 Restart ReaderIN Online</button>
                 </div>
                 <div style="display:flex; gap:10px; margin-top: 10px;">
-                    <button class="btn btn-danger btn-sm" onclick="performAction('rst_hardware')">🔴 Hardware Reset (GPIO)</button>
+                    <button class="btn btn-danger btn-sm" onclick="performAction('rst_hardware')">🔴 Reset Remote Reader (IN)</button>
+                    <button class="btn btn-warning btn-sm" onclick="performAction('rst_reader_out')">🔄 Reset Local Reader (OUT)</button>
                     <button class="btn btn-primary btn-sm" onclick="performAction('rst_self')">♻️ Restart This Unit</button>
                 </div>
             </div>

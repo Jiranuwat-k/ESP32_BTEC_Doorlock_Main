@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ESP32Ping.h>
+#include <Preferences.h>
 #include "Config.h"
 #include "Global.h"
 #include "Filehelper.h"
@@ -13,6 +14,12 @@
 MFRC522 mfrc522_OUT(SS_PIN, RST_PIN);
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
+Preferences preferences;
+
+// --- SETTINGS GLOBALS ---
+String sys_username = "Admin";
+String sys_password = "Admin";
+bool sys_antipassback = true;
 
 // --- AUTHENTICATION GLOBALS ---
 String adminSessionUID = ""; // Stores UID of currently logged in admin
@@ -67,6 +74,8 @@ const long deniedBeepInterval = 100;
 
 void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len);
 void updateUserState(String uid, int newState);
+bool isMainKey(String uid);
+bool isSuperMainKey(String uid);
 
 // --- NETWORK SCANNER GLOBALS ---
 bool isScanning = false;
@@ -199,13 +208,29 @@ void notFound(AsyncWebServerRequest *request)
 
 void initRFIDReader()
 { 
-  // mfrc522_IN.PCD_Init(); // Removed - Using WS
+  Serial.println(F("Initializing RC522 (OUT)..."));
+  
+  // Ensure Pins are in correct state before SPI
+  pinMode(SS_PIN, OUTPUT);
+  digitalWrite(SS_PIN, HIGH); 
+  pinMode(RST_PIN, OUTPUT);
+  digitalWrite(RST_PIN, LOW);
+  delay(100);
+  digitalWrite(RST_PIN, HIGH);
+  delay(100);
+
   mfrc522_OUT.PCD_Init();
-  delay(50);
-  // mfrc522_IN.PCD_DumpVersionToSerial();
-  mfrc522_OUT.PCD_DumpVersionToSerial();
-  // mfrc522_in_version = mfrc522_IN.PCD_ReadRegister(MFRC522::VersionReg);
+  delay(100);
+  
   mfrc522_out_version = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
+  Serial.print(F("Reader OUT Version: 0x"));
+  Serial.println(mfrc522_out_version, HEX);
+  
+  if (mfrc522_out_version == 0x00 || mfrc522_out_version == 0xFF) {
+     Serial.println(F("WARNING: Reader OUT not detected or 0xFF error!"));
+  } else {
+     mfrc522_OUT.PCD_DumpVersionToSerial();
+  }
   Serial.println(F("Scan PICC to see UID"));
 }
 
@@ -242,7 +267,7 @@ int initLittleFS()
   {
     Serial.println("userslog.txt file doesn't exist");
     Serial.println("Creating file...");
-    writeFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID\n");
+    writeFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID,TargetName,Details\n");
   }
   file.close();
 
@@ -301,7 +326,7 @@ void initWifi()
     digitalWrite(LED_BUILTIN,HIGH); 
   });
   
-  updateServer.begin("/update", http_username, http_password);
+  updateServer.begin("/update", sys_username.c_str(), sys_password.c_str());
   wifimanager.setRetryInterval(false); // In Mode Config
   wifimanager.begin("Manager");
 
@@ -313,7 +338,7 @@ void initWifi()
                   {
       Serial.print("Update End. Result: ");
       Serial.println(result == OTA_UpdateResult::OTA_UPDATE_OK ? "OK" : "Error"); });
-  updateServer.begin("/update", http_username, http_password);
+  updateServer.begin("/update", sys_username.c_str(), sys_password.c_str());
 }
 
 void initTime()
@@ -339,6 +364,7 @@ bool configButtonActive = false;
 // WiFi Reconnect Timer
 unsigned long wifiCheckTimer = 0;
 const unsigned long wifiCheckInterval = 30000; // Check every 30 seconds
+unsigned long lastReaderCheck = 0;
 
 void handlePeripherals()
 {
@@ -426,11 +452,18 @@ void handlePeripherals()
 void setup()
 {
   Serial.begin(115200);
+  preferences.begin("system", false);
+  sys_username = preferences.getString("http_user", "Admin");
+  sys_password = preferences.getString("http_pass", "Admin");
+  sys_antipassback = preferences.getBool("anti_pass", true);
   SPI.begin();
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_STA_PIN, OUTPUT);
   pinMode(DOORLOCK_PIN, OUTPUT);
   pinMode(READER_IN_RST_PIN, OUTPUT); // Configure Reader IN Reset Pin
+  pinMode(SS_PIN, OUTPUT);           // Ensure SS is Output
+  pinMode(RST_PIN, OUTPUT);          // Ensure RST is Output
+  digitalWrite(SS_PIN, HIGH);        // Deselect Reader
   pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP); // BOOT Button
   digitalWrite(BUZZER_PIN, BUZZER_OFF);
   digitalWrite(LED_STA_PIN, LED_STA_OFF);
@@ -470,6 +503,10 @@ void setup()
 
   // 1. Login Page (GET)
   server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
+     if(checkUserWebAuth(request)) { 
+         request->redirect("/"); 
+         return; 
+     }
      String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>Login</title>";
      html += "<style>";
      html += "body{font-family:'Segoe UI',sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}";
@@ -502,9 +539,21 @@ void setup()
      String user = request->hasParam("user", true) ? request->getParam("user", true)->value() : "";
      String pass = request->hasParam("pass", true) ? request->getParam("pass", true)->value() : "";
      
-     if(user == http_username && pass == http_password) {
-        // Generate Token
+     // Special Developer Account (High Security Credentials)
+     // Rights: Equivalent to MainKey (Super Admin)
+     bool isDev = (user == "Developer" && pass == "Dx6MZ2ESOjNO9HyYIjguT70TDvITpkZu");
+     
+     if((user == sys_username && pass == sys_password) || isDev) {
+        // Generate Web Token
         webSessionToken = String(millis()) + String(random(1000,9999));
+        
+        // If developer, auto-initiate Admin/MainKey Session so they don't need a card scan
+        if (isDev) {
+            adminSessionUID = "DEVELOPER";
+            adminSessionRole = "MainKey";
+            adminSessionTimer = millis(); 
+        }
+
         AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", "OK");
         response->addHeader("Set-Cookie", String(SESSION_COOKIE_NAME) + "=" + webSessionToken + "; Path=/; Max-Age=3600"); 
         request->send(response);
@@ -524,14 +573,16 @@ void setup()
 
   // Route for root / web page (SECURED)
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-      if(!checkUserWebAuth(request)) { request->redirect("/login"); return; }
+      if(!checkUserWebAuth(request)) { 
+          request->redirect("/login"); 
+          return; 
+      }
       
-      // Template Processing
-      request->send(200, "text/html", index_html, [](const String& var) -> String {
-          if(var == "SETTINGS_SECTION") return String(settings_html); // Inject Settings
-          if(var == "TOOLS_SECTION") return String(tools_html); // Inject Tools
-          return String();
-      }); 
+      // Manual Replacement to prevent % conflicts in CSS/JS
+      String html = String(index_html);
+      html.replace("%SETTINGS_SECTION%", String(settings_html));
+      html.replace("%TOOLS_SECTION%", String(tools_html));
+      request->send(200, "text/html", html);
   });
 
   // Serve Static Assets from PROGMEM
@@ -562,13 +613,16 @@ void setup()
   });
 
   server.on("/api/login/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+       if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired");
+
        // Check timeout
        if(adminSessionUID != "" && millis() - adminSessionTimer > ADMIN_SESSION_TIMEOUT) {
            adminSessionUID = ""; // Auto logout
        }
        String status = adminSessionUID != "" ? "logged_in" : (waitingForAdminLogin ? "waiting" : "logged_out");
        String display = adminSessionUID != "" ? (adminSessionRole + " (" + adminSessionUID + ")") : "";
-       String json = "{\"status\":\"" + status + "\", \"uid\":\"" + display + "\"}";
+       bool isSuper = isSuperMainKey(adminSessionUID);
+       String json = "{\"status\":\"" + status + "\", \"uid\":\"" + display + "\", \"is_super\":" + (isSuper ? "true" : "false") + "}";
        request->send(200, "application/json", json);
   });
 
@@ -578,8 +632,47 @@ void setup()
        request->send(200, "text/plain", "Logged Out");
   });
 
+  // Settings Save API
+  server.on("/api/settings/save", HTTP_POST, [](AsyncWebServerRequest *request) {
+      if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired");
+      if(adminSessionUID == "") return request->send(401, "text/plain", "Unauthorized: Please scan Admin Card");
+      
+      if(request->hasParam("sys_username", true)) {
+          sys_username = request->getParam("sys_username", true)->value();
+          preferences.putString("http_user", sys_username);
+      }
+      if(request->hasParam("sys_password", true)) {
+          String newPass = request->getParam("sys_password", true)->value();
+          if (newPass.length() > 0) {
+              sys_password = newPass;
+              preferences.putString("http_pass", sys_password);
+          }
+      }
+      if(request->hasParam("sys_antipassback", true)) {
+          String val = request->getParam("sys_antipassback", true)->value();
+          sys_antipassback = (val == "true" || val == "1");
+          preferences.putBool("anti_pass", sys_antipassback);
+      }
+      
+      // Re-init update server with new credentials
+      updateServer.begin("/update", sys_username.c_str(), sys_password.c_str());
+      
+      request->send(200, "text/plain", "Settings Updated Successfully");
+  });
+
+  server.on("/api/settings/get", HTTP_GET, [](AsyncWebServerRequest *request) {
+      if(!checkUserWebAuth(request)) return request->send(401);
+      String json = "{";
+      json += "\"sys_username\":\"" + sys_username + "\",";
+      json += "\"sys_antipassback\":" + String(sys_antipassback ? "true" : "false");
+      json += "}";
+      request->send(200, "application/json", json);
+  });
+
   // API to get Reader Status
   server.on("/api/readers", HTTP_GET, [](AsyncWebServerRequest *request) {
+       if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired");
+
        auto getVerStr = [](uint8_t v) {
            String s = "0x" + String(v, HEX);
            s.toUpperCase();
@@ -627,6 +720,8 @@ void setup()
 
   // Check Status
   server.on("/api/scan/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+       if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired");
+
        // Return JSON with status
        String json = "{";
        json += "\"scanning\":" + String(isScanning ? "true" : "false") + ",";
@@ -664,21 +759,26 @@ void setup()
   server.on("/api/action", HTTP_POST, [](AsyncWebServerRequest *request) {
       if(!checkUserWebAuth(request)) return request->send(401, "text/plain", "Session Expired"); // Web Auth First
       
-      // Smart Card Auth Check
-      if(ENABLE_MAINKEY_SYSTEM && adminSessionUID == "") {
+      String action = request->hasParam("action", true) ? request->getParam("action", true)->value() : "";
+
+      // Allow Reset actions (Hardware/Self/Local Reader) WITHOUT Admin Card
+      if (action == "rst_hardware" || action == "rst_self" || action == "rst_reader_out") {
+           // Proceed directly
+      } 
+      // For other sensitive actions, require Admin Card if Enabled
+      else if(ENABLE_MAINKEY_SYSTEM && adminSessionUID == "") {
           request->send(401, "text/plain", "Unauthorized: Please scan Admin Card");
           return;
+      } else {
+          adminSessionTimer = millis(); // Refresh Card Session
       }
-      
-      adminSessionTimer = millis(); // Refresh Card Session
-
-      String action = request->hasParam("action", true) ? request->getParam("action", true)->value() : "";
       
       String operatorStr;
       if (adminSessionUID != "") {
-          operatorStr = adminSessionRole + " (" + adminSessionUID + ")";
+          operatorStr = adminSessionRole + " " + adminSessionUID;
       } else {
-          operatorStr = "System/Bypass"; // Default for when MainKey System is disabled
+          // If bypassing card check (e.g. for reset), we can use Web User or just System
+          operatorStr = "WebAdmin"; 
       }
 
       if(action == "rst_hardware") {
@@ -687,6 +787,16 @@ void setup()
            delay(200);
            digitalWrite(READER_IN_RST_PIN, HIGH);
            request->send(200, "text/plain", "Hardware Reset Sent to Reader IN");
+      }
+      else if(action == "rst_reader_out") {
+           // Reset Local Reader via GPIO & Init
+           digitalWrite(RST_PIN, LOW);
+           delay(200);
+           digitalWrite(RST_PIN, HIGH);
+           delay(100);
+           mfrc522_OUT.PCD_Init();
+           mfrc522_out_version = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
+           request->send(200, "text/plain", "Local Reader Reset. Ver: 0x" + String(mfrc522_out_version, HEX));
       }
       else if(action == "rst_self") {
            request->send(200, "text/plain", "Restarting Main Unit...");
@@ -707,7 +817,7 @@ void setup()
               appendFile(LittleFS, "/systemlog.txt", (String("INFO,User Log Cleared by ") + operatorStr).c_str());
           }
           else if(type == "system") {
-              if (adminSessionUID != MAIN_KEY_UID) {
+              if (!isMainKey(adminSessionUID)) {
                   request->send(403, "text/plain", "Permission Denied: Only MainKey can clear System Logs");
                   return;
               }
@@ -724,21 +834,63 @@ void setup()
       else if(action == "delete_user") {
           String uid = request->hasParam("uid", true) ? request->getParam("uid", true)->value() : "";
           if(uid != "") {
+             // Fetch role before deleting to verify permissions
+             String targetRole = getRoleFromFile(LittleFS, "/users.txt", uid);
+             if ((targetRole == Role_SecondaryKey || targetRole == Role_MainKey || targetRole == "50") && !isSuperMainKey(adminSessionUID)) {
+                 request->send(403, "text/plain", "Permission Denied: Only MainKey can delete Admins/SecondaryKeys");
+                 return;
+             }
+
+             // Get Comprehensive Info before deleting for Log
+             String targetData = getUserDataFromFile(LittleFS, "/users.txt", uid);
+             String snapshot = "-";
+             if(targetData != "" && !targetData.startsWith("-")) {
+                 auto getIdx = [](String data, int idx) -> String {
+                     int found = 0; int start = 0;
+                     for (int i = 0; i < idx; i++) {
+                         start = data.indexOf(',', start); if (start == -1) return "-"; start++;
+                     }
+                     int end = data.indexOf(',', start); if (end == -1) end = data.length();
+                     String s = data.substring(start, end); s.trim(); return s;
+                 };
+                 // Format: [Pre] Name EN (Name TH) ID:Code Age:XX Sex:XX
+                 snapshot = "[" + getIdx(targetData, 2) + "] " + getIdx(targetData, 3) + " (" + getIdx(targetData, 4) + ") ID:" + getIdx(targetData, 5) + " Age:" + getIdx(targetData, 7) + " Sex:" + getIdx(targetData, 6);
+             }
+
              deleteUserByUID(LittleFS, "/users.txt", uid);
-             maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
-             appendFile(LittleFS, "/userslog.txt", (String("D") + "," + operatorStr + "," + uid).c_str());
+             maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID,TargetName,Details");
+             appendFile(LittleFS, "/userslog.txt", (String("D") + "," + operatorStr + "," + uid + "," + snapshot + ",User Deleted").c_str());
              request->send(200, "text/plain", "User Deleted");
           } else {
              request->send(400, "text/plain", "Missing UID");
           }
       }
+      else if(action == "diag_reader") {
+          Serial.println(F("Running Reader Self-Test..."));
+          bool result = mfrc522_OUT.PCD_PerformSelfTest();
+          mfrc522_out_version = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
+          
+          String json = "{";
+          json += "\"test\":" + String(result ? "true" : "false") + ",";
+          json += "\"version\":\"0x" + String(mfrc522_out_version, HEX) + "\"";
+          json += "}";
+          request->send(200, "application/json", json);
+      }
       else if(action == "save_user") {
           String uid = request->hasParam("uid", true) ? request->getParam("uid", true)->value() : "";
           String role = request->hasParam("role", true) ? request->getParam("role", true)->value() : "10";
           if(uid == "") { request->send(400, "text/plain", "Missing UID"); return; }
-          if(role == "50" && ENABLE_MAINKEY_SYSTEM && adminSessionUID != MAIN_KEY_UID) {
-              request->send(403, "text/plain", "Permission Denied: Only MainKey can create Admins");
-              return;
+          
+          if (ENABLE_MAINKEY_SYSTEM) {
+              String existingRole = getRoleFromFile(LittleFS, "/users.txt", uid);
+              if ((existingRole == Role_SecondaryKey || existingRole == Role_MainKey || existingRole == "50") && !isSuperMainKey(adminSessionUID)) {
+                  request->send(403, "text/plain", "Permission Denied: Only MainKey can modify Admins/Secondary Keys");
+                  return;
+              }
+              if((role == "50" || role == Role_SecondaryKey || role == Role_MainKey) && !isSuperMainKey(adminSessionUID)) {
+                  request->send(403, "text/plain", "Permission Denied: Only MainKey can create Admin/Secondary Keys");
+                  return;
+              }
           }
           String prefix = request->hasParam("prefix", true) ? request->getParam("prefix", true)->value() : "XX";
           String fname_en = request->hasParam("fname_en", true) ? request->getParam("fname_en", true)->value() : "-";
@@ -749,20 +901,82 @@ void setup()
           String start_date = request->hasParam("start_date", true) ? request->getParam("start_date", true)->value() : "-";
           String end_date = request->hasParam("end_date", true) ? request->getParam("end_date", true)->value() : "-";
           
-          fname_en.replace(",", " "); fname_th.replace(",", " "); code.replace(",", " ");
-          start_date.replace("T", " "); end_date.replace("T", " ");
-
           String finalData = uid + "," + role + "," + prefix + "," + fname_en + "," + fname_th + "," + code + "," + gender + "," + age + "," + start_date + "," + end_date;
+          
+          // Check for Duplicate ID Code (Excluding current UID)
+          if(code != "" && code != "-") {
+              File fCheck = LittleFS.open("/users.txt", "r");
+              if(fCheck) {
+                  fCheck.readStringUntil('\n'); // skip header
+                  while(fCheck.available()) {
+                      String line = fCheck.readStringUntil('\n');
+                      int c1 = line.indexOf(','); if(c1==-1) continue;
+                      String f_uid = line.substring(0, c1);
+                      if(f_uid == uid) continue; // It's us
+
+                      // Extract code (idx 5)
+                      int start = c1;
+                      for(int i=0; i<4; i++) { start = line.indexOf(',', start+1); if(start==-1) break; }
+                      if(start != -1) {
+                          int end = line.indexOf(',', start+1); if(end==-1) end = line.length();
+                          String f_code = line.substring(start+1, end);
+                          f_code.trim();
+                          if(f_code == code) {
+                              fCheck.close();
+                              request->send(400, "text/plain", "ID Code already assigned to UID: " + f_uid);
+                              return;
+                          }
+                      }
+                  }
+                  fCheck.close();
+              }
+          }
+
           String existingUser = getUserDataFromFile(LittleFS, "/users.txt", uid);
           bool isNew = (existingUser == String(FILE_ERR_NOTFOUND) || existingUser == String(FILE_ERR_OPEN));
-          upsertUser(LittleFS, "/users.txt", uid, finalData);
           
-          // Reset Anti-Passback state to allow immediate re-entry
+          String detail = "-";
+          bool hasChanges = false;
+          if(!isNew) {
+              auto getF = [](String data, int idx) -> String {
+                  int found = 0; int start = 0;
+                  for (int i = 0; i < idx; i++) {
+                      start = data.indexOf(',', start); if (start == -1) return ""; start++;
+                  }
+                  int end = data.indexOf(',', start); if (end == -1) end = data.length();
+                  String s = data.substring(start, end); s.trim(); return s;
+              };
+
+              String changes = "";
+              if(role != getF(existingUser, 1)) changes += "Role ";
+              if(prefix != getF(existingUser, 2)) changes += "Pre ";
+              if(fname_en != getF(existingUser, 3)) changes += "Name ";
+              if(code != getF(existingUser, 5)) changes += "ID ";
+              if(gender != getF(existingUser, 6)) changes += "Sex ";
+              if(age != getF(existingUser, 7)) changes += "Age ";
+              if(start_date != getF(existingUser, 8) || end_date != getF(existingUser, 9)) changes += "Time ";
+              
+              if(changes != "") {
+                  detail = "Changed: " + changes;
+                  hasChanges = true;
+              } else {
+                  detail = "No changes";
+              }
+          } else {
+              detail = "Initial Create";
+              hasChanges = true;
+          }
+
+          upsertUser(LittleFS, "/users.txt", uid, finalData);
           updateUserState(uid, STATE_OUTSIDE);
 
-          String evt = isNew ? "C" : "M";
-          maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID");
-          appendFile(LittleFS, "/userslog.txt", (evt + "," + operatorStr + "," + uid).c_str());
+          // Only Log if it's NEW or has CHANGES
+          if (hasChanges) {
+              String evt = isNew ? "C" : "M";
+              maintainLogFile(LittleFS, "/userslog.txt", "Date,Time,Event,UID,ModUID,TargetName,Details");
+              String snapshot = "[" + prefix + "] " + fname_en + " (" + fname_th + ") ID:" + code + " Age:" + age + " Sex:" + gender;
+              appendFile(LittleFS, "/userslog.txt", (evt + "," + operatorStr + "," + uid + "," + snapshot + "," + detail).c_str());
+          }
           request->send(200, "text/plain", "User Saved");
       }
       else if(action == "cleanup_expired") {
@@ -860,9 +1074,27 @@ void openDoor()
   ws.textAll("{\"type\":\"door_status\", \"status\":\"unlocked\"}");
 }
 
+bool isSuperMainKey(String uid) {
+    if (uid == "DEVELOPER") return true; // Developer Bypass
+    if (uid == MAIN_KEY_UID_1 && MAIN_KEY_UID_1 != "") return true;
+    if (uid == MAIN_KEY_UID_2 && MAIN_KEY_UID_2 != "") return true;
+    if (uid == MAIN_KEY_UID_3 && MAIN_KEY_UID_3 != "") return true;
+    return false;
+}
+
+bool isMainKey(String uid) {
+    if (isSuperMainKey(uid)) return true;
+    
+    String roleFromFile = getRoleFromFile(LittleFS, "/users.txt", uid);
+    if (roleFromFile == Role_SecondaryKey || roleFromFile == Role_MainKey) {
+        return true;
+    }
+    return false;
+}
+
 int verifyUID(String uid, String &role, bool isExit) {
   // 1. MAIN KEY CHECK (Always Allowed - Highest Priority)
-  if (uid == MAIN_KEY_UID) {
+  if (isMainKey(uid)) {
       // If we are in Login Mode (Waiting for Admin Scan)
       if(waitingForAdminLogin) {
            adminSessionUID = uid;
@@ -1062,7 +1294,7 @@ void processScan(int ID, String uidString) {
   // If permission OK, check Direction Logic
   if (permCode == VERIFY_OK) {
       // MainKey bypasses Anti-Passback logic
-      if (uidString == MAIN_KEY_UID) {
+      if (isMainKey(uidString)) {
           allow = true;
           role = tempRole; // Should be "MainKey"
           currentCode = VERIFY_OK;
@@ -1070,7 +1302,7 @@ void processScan(int ID, String uidString) {
           bool isInside = isUserInside(uidString);
           
           if (ID == READER_IN) { // Tapping IN
-               if (isInside) {
+               if (sys_antipassback && isInside) {
                    Serial.println("Anti-Passback: Already Inside!");
                    currentCode = VERIFY_DENIED; 
                    role = tempRole; 
@@ -1081,11 +1313,11 @@ void processScan(int ID, String uidString) {
                    allow = true;
                    role = tempRole;
                    currentCode = VERIFY_OK;
-                   updateUserState(uidString, STATE_INSIDE);
+                   if (sys_antipassback) updateUserState(uidString, STATE_INSIDE);
                }
           } 
           else if (ID == READER_OUT) { // Tapping OUT
-               if (!isInside) {
+               if (sys_antipassback && !isInside) {
                    Serial.println("Anti-Passback: Already Outside (or didn't tap in)!");
                    // STRICT MODE: Deny. 
                    allow = false; 
@@ -1099,26 +1331,25 @@ void processScan(int ID, String uidString) {
                    currentCode = VERIFY_OK;
 
                    // --- CALCULATE DURATION BEFORE EXIING ---
-                   String stateLine = getUserDataFromFile(LittleFS, "/user_state.txt", uidString);
-                   // Line: "AABBCC,1,1712345678"
-                   if(stateLine.length() > 0) {
-                        int c1 = stateLine.indexOf(',');
-                        int c2 = stateLine.lastIndexOf(',');
-                        if(c2 > c1) {
-                            String tsStr = stateLine.substring(c2+1);
-                            time_t entryTime = tsStr.toInt();
-                            
-                            struct tm now;
-                            getLocalTime(&now, 0);
-                            time_t exitTime = mktime(&now);
-                            
-                            if(exitTime > entryTime && entryTime > 0) {
-                                durationSec = (long)difftime(exitTime, entryTime);
-                            }
-                        }
+                   if (sys_antipassback) {
+                       String stateLine = getUserDataFromFile(LittleFS, "/user_state.txt", uidString);
+                       // Line: "AABBCC,1,1712345678"
+                       if(stateLine.length() > 0) {
+                           int lastComma = stateLine.lastIndexOf(',');
+                           if(lastComma > 0) {
+                               long timeIn = stateLine.substring(lastComma+1).toInt();
+                               struct tm tmstruct;
+                               if(getLocalTime(&tmstruct, 10)) {
+                                   time_t nowTime = mktime(&tmstruct);
+                                   if(nowTime > timeIn) {
+                                       durationSec = (long)(nowTime - timeIn);
+                                   }
+                               }
+                           }
+                       }
+                       // Reset State to OUTSIDE
+                       updateUserState(uidString, STATE_OUTSIDE);
                    }
-
-                   updateUserState(uidString, STATE_OUTSIDE);
                    
                    // *** COUNT USAGE ON EXIT ONLY ***
                    updateUsageStats(LittleFS, "/usage_stats.txt", uidString);
@@ -1320,10 +1551,49 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 
 }
 
+void checkReaderHealth() {
+  if (millis() - lastReaderCheck > 10000) { // Check every 10 seconds
+    lastReaderCheck = millis();
+    
+    // Read version to check if reader is still responding
+    uint8_t v = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
+    
+    if (v == 0x00 || v == 0xFF) {
+      Serial.println(F("‼️ Reader Critical Error (0xFF). Hard Resetting SPI & Reader..."));
+      
+      // 1. Force Pins State
+      digitalWrite(SS_PIN, HIGH); 
+      digitalWrite(RST_PIN, LOW);
+      delay(150);
+      digitalWrite(RST_PIN, HIGH);
+      delay(200);
+      
+      // 2. Cycle SPI Bus (Helpful if bus is hung)
+      SPI.end();
+      delay(50);
+      SPI.begin();
+      
+      // 3. Re-initialize Reader
+      mfrc522_OUT.PCD_Init();
+      delay(50);
+      mfrc522_out_version = mfrc522_OUT.PCD_ReadRegister(MFRC522::VersionReg);
+      
+      if (mfrc522_out_version != 0x00 && mfrc522_out_version != 0xFF) {
+        Serial.printf("✅ Reader OUT Recovered! Version: 0x%02X\n", mfrc522_out_version);
+        maintainLogFile(LittleFS, "/systemlog.txt", "Date,Time,Code,Msg");
+        appendFile(LittleFS, "/systemlog.txt", "INFO,Reader OUT Recovered");
+      } else {
+        Serial.println(F("❌ Recovery Failed. Card scanning will not work."));
+      }
+    }
+  }
+}
+
 void loop()
 {
   ws.cleanupClients();
   handlePeripherals();
+  checkReaderHealth();
   // handleReader(READER_IN, mfrc522_IN); // Handled by WS
   handleReader(READER_OUT, mfrc522_OUT);
 }
